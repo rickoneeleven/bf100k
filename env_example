@@ -1,0 +1,12 @@
+# Betfair API Credentials
+BETFAIR_USERNAME=your_username
+BETFAIR_PASSWORD=your_password
+BETFAIR_APP_KEY=your_app_key
+
+# Certificate Paths
+BETFAIR_CERT_FILE=certs/client-2048.crt
+BETFAIR_KEY_FILE=certs/client-2048.key
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FILE=web/logs/betfair_client.log
