@@ -1,3 +1,5 @@
+# Update to betfair_client.py - add at top of file with other imports:
+
 """
 betfair_client.py
 
@@ -35,7 +37,7 @@ class BetfairClient:
         # API endpoints
         self.cert_login_url = 'https://identitysso-cert.betfair.com/api/certlogin'
         self.betting_url = 'https://api.betfair.com/exchange/betting/json-rpc/v1'
-        
+
     def login(self) -> bool:
         """
         Login to Betfair API using certificate-based authentication
@@ -120,7 +122,7 @@ class BetfairClient:
             
     def get_football_markets_for_today(self) -> Optional[List[Dict]]:
         """
-        Get all football markets for today
+        Get top 5 football Match Odds markets for today, sorted by matched volume
         Returns list of markets or None if request fails
         """
         if not self.session_token:
@@ -138,18 +140,20 @@ class BetfairClient:
                 'params': {
                     'filter': {
                         'eventTypeIds': ['1'],  # 1 is Football
+                        'marketTypeCodes': ['MATCH_ODDS'],  # Filter for Match Odds only
                         'marketStartTime': {
                             'from': today,
                             'to': tomorrow
                         },
                         'inPlayOnly': False
                     },
-                    'maxResults': 1000,
+                    'maxResults': 5,  # Only get top 5
                     'marketProjection': [
                         'EVENT',
                         'MARKET_START_TIME',
                         'RUNNER_DESCRIPTION'
-                    ]
+                    ],
+                    'sort': 'MAXIMUM_TRADED'  # Sort by matched volume
                 },
                 'id': 1
             }
@@ -180,63 +184,4 @@ class BetfairClient:
                 
         except Exception as e:
             self.logger.error(f'Exception during get_football_markets_for_today: {str(e)}')
-            return None
-            
-    def get_market_volumes(self, market_ids: List[str], batch_size: int = 25) -> Optional[List[Dict]]:
-        """
-        Get matched volumes for a list of market IDs
-        Processes in batches to respect API limits
-        Returns list of market books or None if request fails
-        """
-        if not self.session_token:
-            self.logger.error('No session token available - please login first')
-            return None
-            
-        try:
-            all_results = []
-            
-            # Process in batches
-            for i in range(0, len(market_ids), batch_size):
-                batch = market_ids[i:i + batch_size]
-                
-                payload = {
-                    'jsonrpc': '2.0',
-                    'method': 'SportsAPING/v1.0/listMarketBook',
-                    'params': {
-                        'marketIds': batch,
-                        'priceProjection': {
-                            'priceData': ['EX_BEST_OFFERS']
-                        }
-                    },
-                    'id': 1
-                }
-                
-                headers = {
-                    'X-Application': self.app_key,
-                    'X-Authentication': self.session_token,
-                    'content-type': 'application/json'
-                }
-                
-                resp = requests.post(
-                    self.betting_url,
-                    data=json.dumps(payload),
-                    headers=headers
-                )
-                
-                if resp.status_code == 200:
-                    resp_json = resp.json()
-                    if 'result' in resp_json:
-                        all_results.extend(resp_json['result'])
-                    else:
-                        self.logger.error(f'Error in response: {resp_json.get("error")}')
-                        return None
-                else:
-                    self.logger.error(f'Request failed with status code: {resp.status_code}')
-                    return None
-                    
-            self.logger.info(f'Successfully retrieved volumes for {len(all_results)} markets')
-            return all_results
-                
-        except Exception as e:
-            self.logger.error(f'Exception during get_market_volumes: {str(e)}')
             return None
