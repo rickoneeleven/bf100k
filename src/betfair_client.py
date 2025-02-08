@@ -120,6 +120,59 @@ class BetfairClient:
             self.logger.error(f'Exception during list_event_types: {str(e)}')
             return None
             
+    def list_market_book(self, market_ids: List[str]) -> Optional[List[Dict]]:
+        """
+        Get detailed market data including prices for specified markets
+        Returns list of market books or None if request fails
+        """
+        if not self.session_token:
+            self.logger.error('No session token available - please login first')
+            return None
+            
+        try:
+            payload = {
+                'jsonrpc': '2.0',
+                'method': 'SportsAPING/v1.0/listMarketBook',
+                'params': {
+                    'marketIds': market_ids,
+                    'priceProjection': {
+                        'priceData': ['EX_BEST_OFFERS'],
+                        'exBestOffersOverrides': {
+                            'bestPricesDepth': 1
+                        }
+                    }
+                },
+                'id': 1
+            }
+            
+            headers = {
+                'X-Application': self.app_key,
+                'X-Authentication': self.session_token,
+                'content-type': 'application/json'
+            }
+            
+            resp = requests.post(
+                self.betting_url,
+                data=json.dumps(payload),
+                headers=headers
+            )
+            
+            if resp.status_code == 200:
+                resp_json = resp.json()
+                if 'result' in resp_json:
+                    self.logger.info('Successfully retrieved market books')
+                    return resp_json['result']
+                else:
+                    self.logger.error(f'Error in response: {resp_json.get("error")}')
+                    return None
+            else:
+                self.logger.error(f'Request failed with status code: {resp.status_code}')
+                return None
+                
+        except Exception as e:
+            self.logger.error(f'Exception during list_market_book: {str(e)}')
+            return None
+            
     def get_football_markets_for_today(self) -> Optional[List[Dict]]:
         """
         Get top 5 football Match Odds markets for today, sorted by matched volume
