@@ -1,11 +1,8 @@
-# Update to betfair_client.py - add at top of file with other imports:
-
 """
 betfair_client.py
 
 Core client for interacting with the Betfair API. Handles authentication,
-session management, and basic market operations. Part of the Betfair Football
-Market Analysis Tool.
+session management, and basic market operations.
 """
 
 import os
@@ -13,13 +10,9 @@ import json
 import logging
 import requests
 from datetime import datetime, timezone
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 
 class BetfairClient:
-    """
-    Core client for interacting with Betfair API
-    """
-    
     def __init__(self, app_key: str, cert_file: str, key_file: str):
         self.app_key = app_key
         self.cert_file = cert_file
@@ -39,10 +32,7 @@ class BetfairClient:
         self.betting_url = 'https://api.betfair.com/exchange/betting/json-rpc/v1'
 
     def login(self) -> bool:
-        """
-        Login to Betfair API using certificate-based authentication
-        Returns True if successful, False otherwise
-        """
+        """Login to Betfair API using certificate-based authentication"""
         try:
             payload = {
                 'username': os.getenv('BETFAIR_USERNAME'),
@@ -72,22 +62,38 @@ class BetfairClient:
         except Exception as e:
             self.logger.error(f'Exception during login: {str(e)}')
             return False
-            
-    def list_event_types(self) -> Optional[List[Dict]]:
-        """
-        List all event types (sports) available on Betfair
-        Returns list of event types or None if request fails
-        """
+
+    def get_football_markets_for_today(self) -> Optional[List[Dict]]:
+        """Get top 5 football Match Odds markets for today, sorted by matched volume"""
         if not self.session_token:
             self.logger.error('No session token available - please login first')
             return None
             
         try:
+            # Get today's date in ISO format
+            today = datetime.now(timezone.utc).strftime('%Y-%m-%dT00:00:00Z')
+            tomorrow = datetime.now(timezone.utc).replace(hour=23, minute=59, second=59).strftime('%Y-%m-%dT%H:%M:%SZ')
+            
             payload = {
                 'jsonrpc': '2.0',
-                'method': 'SportsAPING/v1.0/listEventTypes',
+                'method': 'SportsAPING/v1.0/listMarketCatalogue',
                 'params': {
-                    'filter': {}
+                    'filter': {
+                        'eventTypeIds': ['1'],  # 1 is Football
+                        'marketTypeCodes': ['MATCH_ODDS'],
+                        'marketStartTime': {
+                            'from': today,
+                            'to': tomorrow
+                        },
+                        'inPlayOnly': False
+                    },
+                    'maxResults': 5,
+                    'marketProjection': [
+                        'EVENT',
+                        'MARKET_START_TIME',
+                        'RUNNER_DESCRIPTION'
+                    ],
+                    'sort': 'MAXIMUM_TRADED'
                 },
                 'id': 1
             }
@@ -107,7 +113,7 @@ class BetfairClient:
             if resp.status_code == 200:
                 resp_json = resp.json()
                 if 'result' in resp_json:
-                    self.logger.info('Successfully retrieved event types')
+                    self.logger.info('Successfully retrieved football markets')
                     return resp_json['result']
                 else:
                     self.logger.error(f'Error in response: {resp_json.get("error")}')
@@ -117,13 +123,19 @@ class BetfairClient:
                 return None
                 
         except Exception as e:
-            self.logger.error(f'Exception during list_event_types: {str(e)}')
+            self.logger.error(f'Exception during get_football_markets_for_today: {str(e)}')
             return None
-            
-    def list_market_book(self, market_ids: List[str]) -> Optional[List[Dict]]:
+
+    def list_market_book(self, market_ids: List[str], market_runners: Dict[str, List[Dict]] = None) -> Optional[List[Dict]]:
         """
         Get detailed market data including prices for specified markets
-        Returns list of market books or None if request fails
+        
+        Args:
+            market_ids: List of market IDs to retrieve
+            market_runners: Optional dict mapping market IDs to runner information
+        
+        Returns:
+            List of market books with mapped runner names or None if request fails
         """
         if not self.session_token:
             self.logger.error('No session token available - please login first')
@@ -160,8 +172,27 @@ class BetfairClient:
             if resp.status_code == 200:
                 resp_json = resp.json()
                 if 'result' in resp_json:
+                    market_books = resp_json['result']
+                    
+                    # Map runner names if market_runners provided
+                    if market_runners:
+                        for market_book in market_books:
+                            market_id = market_book['marketId']
+                            if market_id in market_runners:
+                                runner_map = {
+                                    runner['selectionId']: runner['runnerName']
+                                    for runner in market_runners[market_id]
+                                }
+                                
+                                # Add runner names to market book data
+                                for runner in market_book.get('runners', []):
+                                    runner['runnerName'] = runner_map.get(
+                                        runner['selectionId'],
+                                        f"Unknown Runner ({runner['selectionId']})"
+                                    )
+                    
                     self.logger.info('Successfully retrieved market books')
-                    return resp_json['result']
+                    return market_books
                 else:
                     self.logger.error(f'Error in response: {resp_json.get("error")}')
                     return None
@@ -172,69 +203,39 @@ class BetfairClient:
         except Exception as e:
             self.logger.error(f'Exception during list_market_book: {str(e)}')
             return None
-            
-    def get_football_markets_for_today(self) -> Optional[List[Dict]]:
+
+    def get_markets_with_odds(self) -> Tuple[Optional[List[Dict]], Optional[List[Dict]]]:
         """
-        Get top 5 football Match Odds markets for today, sorted by matched volume
-        Returns list of markets or None if request fails
+        Get both market catalogue and price data for top football markets.
+        Ensures market books are properly aligned with their catalogs.
         """
-        if not self.session_token:
-            self.logger.error('No session token available - please login first')
-            return None
+        """
+        Get both market catalogue and price data for top football markets
+        Returns tuple of (market_catalogue, market_books) or (None, None) if error
+        """
+        # Get market catalogue data first
+        markets = self.get_football_markets_for_today()
+        if not markets:
+            return None, None
             
-        try:
-            # Get today's date in ISO format
-            today = datetime.now(timezone.utc).strftime('%Y-%m-%dT00:00:00Z')
-            tomorrow = datetime.now(timezone.utc).replace(hour=23, minute=59, second=59).strftime('%Y-%m-%dT%H:%M:%SZ')
+        # Create runner mapping
+        market_runners = {
+            market['marketId']: market.get('runners', [])
+            for market in markets
+        }
+        
+        # Get all market IDs in order
+        market_ids = [market['marketId'] for market in markets]
+        
+        # Get market books with runner names mapped
+        market_books = self.list_market_book(market_ids, market_runners)
+        
+        # Ensure market books are in same order as catalogs
+        if market_books:
+            market_books_dict = {book['marketId']: book for book in market_books}
+            market_books = [market_books_dict[market_id] for market_id in market_ids]
+        
+        if not market_books:
+            return None, None
             
-            payload = {
-                'jsonrpc': '2.0',
-                'method': 'SportsAPING/v1.0/listMarketCatalogue',
-                'params': {
-                    'filter': {
-                        'eventTypeIds': ['1'],  # 1 is Football
-                        'marketTypeCodes': ['MATCH_ODDS'],  # Filter for Match Odds only
-                        'marketStartTime': {
-                            'from': today,
-                            'to': tomorrow
-                        },
-                        'inPlayOnly': False
-                    },
-                    'maxResults': 5,  # Only get top 5
-                    'marketProjection': [
-                        'EVENT',
-                        'MARKET_START_TIME',
-                        'RUNNER_DESCRIPTION'
-                    ],
-                    'sort': 'MAXIMUM_TRADED'  # Sort by matched volume
-                },
-                'id': 1
-            }
-            
-            headers = {
-                'X-Application': self.app_key,
-                'X-Authentication': self.session_token,
-                'content-type': 'application/json'
-            }
-            
-            resp = requests.post(
-                self.betting_url,
-                data=json.dumps(payload),
-                headers=headers
-            )
-            
-            if resp.status_code == 200:
-                resp_json = resp.json()
-                if 'result' in resp_json:
-                    self.logger.info('Successfully retrieved football markets')
-                    return resp_json['result']
-                else:
-                    self.logger.error(f'Error in response: {resp_json.get("error")}')
-                    return None
-            else:
-                self.logger.error(f'Request failed with status code: {resp.status_code}')
-                return None
-                
-        except Exception as e:
-            self.logger.error(f'Exception during get_football_markets_for_today: {str(e)}')
-            return None
+        return markets, market_books

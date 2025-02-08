@@ -61,37 +61,32 @@ def test_market_analysis():
     
     print("✓ Successfully logged in to Betfair")
     
-    # Get football markets
-    markets = client.get_football_markets_for_today()
-    if not markets:
+    # Get football markets with full data
+    markets, market_books = client.get_markets_with_odds()
+    if not markets or not market_books:
         print("✗ Failed to retrieve markets")
         return
     
     print(f"✓ Retrieved {len(markets)} markets for analysis")
     
-    # Get detailed market data including odds
-    market_books = client.list_market_book([market['marketId'] for market in markets])
-    if not market_books:
-        print("✗ Failed to retrieve market odds")
-        return
-        
     # Analyze each market
     found_opportunity = False
     for market, market_book in zip(markets, market_books):
-        print(f"\nAnalyzing market: {market.get('event', {}).get('name')}")
-        
-        # Map runners to their names for better output
-        runner_map = {runner['selectionId']: runner['runnerName'] for runner in market.get('runners', [])}
+        market_id = market.get('marketId')
+        print(f"\nAnalyzing market: {market.get('event', {}).get('name')} (ID: {market_id})")
+        print(f"Market runners from catalog:")
+        for runner in market.get('runners', []):
+            print(f"  {runner.get('selectionId')}: {runner.get('runnerName')}")
+        print("Market runners from book:")
         
         # Print available odds for each selection
         print("Available odds:")
         for runner in market_book.get('runners', []):
-            selection_id = runner.get('selectionId')
             back_prices = runner.get('ex', {}).get('availableToBack', [])
             if back_prices:
                 best_price = back_prices[0].get('price')
                 best_size = back_prices[0].get('size')
-                print(f"  {runner_map.get(selection_id, 'Unknown')}: {best_price} (£{best_size} available)")
+                print(f"  {runner.get('runnerName', 'Unknown')}: {best_price} (£{best_size} available)")
         
         # Test market analysis
         bet_opportunity = tracker.analyze_market_for_betting(market_book, 100.0)
@@ -100,7 +95,14 @@ def test_market_analysis():
             found_opportunity = True
             print(f"\n✓ Found valid betting opportunity:")
             print(f"  - Market: {market.get('event', {}).get('name')}")
-            print(f"  - Selection: {runner_map.get(bet_opportunity['selection_id'], 'Unknown')}")
+            selection_id = bet_opportunity['selection_id']
+            runner_name = next(
+                (r.get('runnerName', 'Unknown') 
+                 for r in market_book.get('runners', [])
+                 if r.get('selectionId') == selection_id),
+                'Unknown'
+            )
+            print(f"  - Selection: {runner_name}")
             print(f"  - Odds: {bet_opportunity['odds']}")
             print(f"  - Stake: £{bet_opportunity['stake']}")
             break
