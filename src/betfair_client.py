@@ -181,3 +181,62 @@ class BetfairClient:
         except Exception as e:
             self.logger.error(f'Exception during get_football_markets_for_today: {str(e)}')
             return None
+            
+    def get_market_volumes(self, market_ids: List[str], batch_size: int = 25) -> Optional[List[Dict]]:
+        """
+        Get matched volumes for a list of market IDs
+        Processes in batches to respect API limits
+        Returns list of market books or None if request fails
+        """
+        if not self.session_token:
+            self.logger.error('No session token available - please login first')
+            return None
+            
+        try:
+            all_results = []
+            
+            # Process in batches
+            for i in range(0, len(market_ids), batch_size):
+                batch = market_ids[i:i + batch_size]
+                
+                payload = {
+                    'jsonrpc': '2.0',
+                    'method': 'SportsAPING/v1.0/listMarketBook',
+                    'params': {
+                        'marketIds': batch,
+                        'priceProjection': {
+                            'priceData': ['EX_BEST_OFFERS']
+                        }
+                    },
+                    'id': 1
+                }
+                
+                headers = {
+                    'X-Application': self.app_key,
+                    'X-Authentication': self.session_token,
+                    'content-type': 'application/json'
+                }
+                
+                resp = requests.post(
+                    self.betting_url,
+                    data=json.dumps(payload),
+                    headers=headers
+                )
+                
+                if resp.status_code == 200:
+                    resp_json = resp.json()
+                    if 'result' in resp_json:
+                        all_results.extend(resp_json['result'])
+                    else:
+                        self.logger.error(f'Error in response: {resp_json.get("error")}')
+                        return None
+                else:
+                    self.logger.error(f'Request failed with status code: {resp.status_code}')
+                    return None
+                    
+            self.logger.info(f'Successfully retrieved volumes for {len(all_results)} markets')
+            return all_results
+                
+        except Exception as e:
+            self.logger.error(f'Exception during get_market_volumes: {str(e)}')
+            return None

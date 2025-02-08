@@ -27,6 +27,7 @@ ENV/
 # Logs
 web/logs/*
 !web/logs/.gitkeep
+*.json
 
 # Certificates
 certs/*
