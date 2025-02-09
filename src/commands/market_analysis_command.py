@@ -102,6 +102,9 @@ class MarketAnalysisCommand:
             )
             
             if meets_criteria:
+                # Log the runner name for debugging
+                self.logger.info(f"Found opportunity for runner: {runner.get('runnerName', 'Unknown')}")
+                
                 return {
                     "market_id": market_data.get('marketId'),
                     "selection_id": runner.get('selectionId'),
@@ -124,8 +127,13 @@ class MarketAnalysisCommand:
         self.logger.info(f"Executing market analysis for market {request.market_id}")
         
         try:
-            # Get market book data
-            market_books = await self.betfair_client.list_market_book([request.market_id])
+            # Get market book data with runner information
+            market_books = await self.betfair_client.list_market_book(
+                [request.market_id],
+                # Pass empty dict to ensure runner names are mapped
+                market_runners={}
+            )
+            
             if not market_books:
                 self.logger.error("Failed to retrieve market data")
                 return None

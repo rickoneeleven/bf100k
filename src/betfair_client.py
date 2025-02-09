@@ -10,6 +10,7 @@ import json
 import logging
 import aiohttp
 import ssl
+import asyncio
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
 
@@ -19,7 +20,8 @@ class BetfairClient:
         self.cert_file = cert_file
         self.key_file = key_file
         self.session_token = None
-        self.http_session = None
+        self._http_session = None
+        self._session_lock = asyncio.Lock()
         
         # Setup logging
         self.logger = logging.getLogger('BetfairClient')
@@ -33,20 +35,28 @@ class BetfairClient:
         self.cert_login_url = 'https://identitysso-cert.betfair.com/api/certlogin'
         self.betting_url = 'https://api.betfair.com/exchange/betting/json-rpc/v1'
 
-    async def create_session(self):
-        """Create HTTP session if not exists"""
-        if not self.http_session or self.http_session.closed:
-            self.http_session = aiohttp.ClientSession()
+    @property
+    def http_session(self) -> Optional[aiohttp.ClientSession]:
+        """Get the current HTTP session"""
+        return self._http_session
 
-    async def close_session(self):
-        """Close HTTP session if exists"""
-        if self.http_session and not self.http_session.closed:
-            await self.http_session.close()
-            self.http_session = None
+    async def ensure_session(self) -> aiohttp.ClientSession:
+        """Ensure a valid HTTP session exists and return it"""
+        async with self._session_lock:
+            if self._http_session is None or self._http_session.closed:
+                self._http_session = aiohttp.ClientSession()
+            return self._http_session
+
+    async def close_session(self) -> None:
+        """Close the HTTP session if it exists"""
+        async with self._session_lock:
+            if self._http_session and not self._http_session.closed:
+                await self._http_session.close()
+                self._http_session = None
 
     async def __aenter__(self):
         """Async context manager entry"""
-        await self.create_session()
+        await self.ensure_session()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -56,9 +66,8 @@ class BetfairClient:
     async def login(self) -> bool:
         """Login to Betfair API using certificate-based authentication"""
         try:
-            if not self.http_session:
-                self.http_session = aiohttp.ClientSession()
-
+            session = await self.ensure_session()
+            
             payload = {
                 'username': os.getenv('BETFAIR_USERNAME'),
                 'password': os.getenv('BETFAIR_PASSWORD')
@@ -68,7 +77,7 @@ class BetfairClient:
             ssl_context = ssl.create_default_context()
             ssl_context.load_cert_chain(self.cert_file, self.key_file)
             
-            async with self.http_session.post(
+            async with session.post(
                 self.cert_login_url,
                 data=payload,
                 headers={'X-Application': self.app_key},
@@ -105,6 +114,8 @@ class BetfairClient:
             return None
             
         try:
+            session = await self.ensure_session()
+            
             # Get today's date in ISO format
             today = datetime.now(timezone.utc).strftime('%Y-%m-%dT00:00:00Z')
             tomorrow = datetime.now(timezone.utc).replace(hour=23, minute=59, second=59).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -139,7 +150,7 @@ class BetfairClient:
                 'content-type': 'application/json'
             }
             
-            async with self.http_session.post(
+            async with session.post(
                 self.betting_url,
                 json=payload,
                 headers=headers
@@ -180,6 +191,8 @@ class BetfairClient:
             return None
             
         try:
+            session = await self.ensure_session()
+            
             payload = {
                 'jsonrpc': '2.0',
                 'method': 'SportsAPING/v1.0/listMarketBook',
@@ -201,7 +214,7 @@ class BetfairClient:
                 'content-type': 'application/json'
             }
             
-            async with self.http_session.post(
+            async with session.post(
                 self.betting_url,
                 json=payload,
                 headers=headers
