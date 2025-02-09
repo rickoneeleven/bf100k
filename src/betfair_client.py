@@ -1,14 +1,14 @@
 """
 betfair_client.py
 
-Core client for interacting with the Betfair API. Handles authentication,
+Async client for interacting with the Betfair API. Handles authentication,
 session management, and basic market operations.
 """
 
 import os
 import json
 import logging
-import requests
+import aiohttp
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
 
@@ -18,6 +18,7 @@ class BetfairClient:
         self.cert_file = cert_file
         self.key_file = key_file
         self.session_token = None
+        self.http_session = None
         
         # Setup logging
         self.logger = logging.getLogger('BetfairClient')
@@ -31,39 +32,54 @@ class BetfairClient:
         self.cert_login_url = 'https://identitysso-cert.betfair.com/api/certlogin'
         self.betting_url = 'https://api.betfair.com/exchange/betting/json-rpc/v1'
 
-    def login(self) -> bool:
+    async def __aenter__(self):
+        """Async context manager entry"""
+        self.http_session = aiohttp.ClientSession()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit"""
+        if self.http_session:
+            await self.http_session.close()
+
+    async def login(self) -> bool:
         """Login to Betfair API using certificate-based authentication"""
         try:
+            if not self.http_session:
+                self.http_session = aiohttp.ClientSession()
+
             payload = {
                 'username': os.getenv('BETFAIR_USERNAME'),
                 'password': os.getenv('BETFAIR_PASSWORD')
             }
             
-            resp = requests.post(
-                self.cert_login_url,
-                cert=(self.cert_file, self.key_file),
-                data=payload,
-                headers={'X-Application': self.app_key}
-            )
+            ssl_context = aiohttp.ssl.create_default_context()
+            ssl_context.load_cert_chain(self.cert_file, self.key_file)
             
-            if resp.status_code == 200:
-                resp_json = resp.json()
-                if resp_json['loginStatus'] == 'SUCCESS':
-                    self.session_token = resp_json['sessionToken']
-                    self.logger.info('Successfully logged in to Betfair API')
-                    return True
+            async with self.http_session.post(
+                self.cert_login_url,
+                data=payload,
+                headers={'X-Application': self.app_key},
+                ssl=ssl_context
+            ) as resp:
+                if resp.status == 200:
+                    resp_json = await resp.json()
+                    if resp_json['loginStatus'] == 'SUCCESS':
+                        self.session_token = resp_json['sessionToken']
+                        self.logger.info('Successfully logged in to Betfair API')
+                        return True
+                    else:
+                        self.logger.error(f'Login failed: {resp_json["loginStatus"]}')
+                        return False
                 else:
-                    self.logger.error(f'Login failed: {resp_json["loginStatus"]}')
+                    self.logger.error(f'Login request failed with status code: {resp.status}')
                     return False
-            else:
-                self.logger.error(f'Login request failed with status code: {resp.status_code}')
-                return False
-                
+                    
         except Exception as e:
             self.logger.error(f'Exception during login: {str(e)}')
             return False
 
-    def get_football_markets_for_today(self) -> Optional[List[Dict]]:
+    async def get_football_markets_for_today(self) -> Optional[List[Dict]]:
         """Get top 5 football Match Odds markets for today, sorted by matched volume"""
         if not self.session_token:
             self.logger.error('No session token available - please login first')
@@ -104,29 +120,32 @@ class BetfairClient:
                 'content-type': 'application/json'
             }
             
-            resp = requests.post(
+            async with self.http_session.post(
                 self.betting_url,
-                data=json.dumps(payload),
+                json=payload,
                 headers=headers
-            )
-            
-            if resp.status_code == 200:
-                resp_json = resp.json()
-                if 'result' in resp_json:
-                    self.logger.info('Successfully retrieved football markets')
-                    return resp_json['result']
+            ) as resp:
+                if resp.status == 200:
+                    resp_json = await resp.json()
+                    if 'result' in resp_json:
+                        self.logger.info('Successfully retrieved football markets')
+                        return resp_json['result']
+                    else:
+                        self.logger.error(f'Error in response: {resp_json.get("error")}')
+                        return None
                 else:
-                    self.logger.error(f'Error in response: {resp_json.get("error")}')
+                    self.logger.error(f'Request failed with status code: {resp.status}')
                     return None
-            else:
-                self.logger.error(f'Request failed with status code: {resp.status_code}')
-                return None
-                
+                    
         except Exception as e:
             self.logger.error(f'Exception during get_football_markets_for_today: {str(e)}')
             return None
 
-    def list_market_book(self, market_ids: List[str], market_runners: Dict[str, List[Dict]] = None) -> Optional[List[Dict]]:
+    async def list_market_book(
+        self,
+        market_ids: List[str],
+        market_runners: Dict[str, List[Dict]] = None
+    ) -> Optional[List[Dict]]:
         """
         Get detailed market data including prices for specified markets
         
@@ -163,58 +182,53 @@ class BetfairClient:
                 'content-type': 'application/json'
             }
             
-            resp = requests.post(
+            async with self.http_session.post(
                 self.betting_url,
-                data=json.dumps(payload),
+                json=payload,
                 headers=headers
-            )
-            
-            if resp.status_code == 200:
-                resp_json = resp.json()
-                if 'result' in resp_json:
-                    market_books = resp_json['result']
-                    
-                    # Map runner names if market_runners provided
-                    if market_runners:
-                        for market_book in market_books:
-                            market_id = market_book['marketId']
-                            if market_id in market_runners:
-                                runner_map = {
-                                    runner['selectionId']: runner['runnerName']
-                                    for runner in market_runners[market_id]
-                                }
-                                
-                                # Add runner names to market book data
-                                for runner in market_book.get('runners', []):
-                                    runner['runnerName'] = runner_map.get(
-                                        runner['selectionId'],
-                                        f"Unknown Runner ({runner['selectionId']})"
-                                    )
-                    
-                    self.logger.info('Successfully retrieved market books')
-                    return market_books
+            ) as resp:
+                if resp.status == 200:
+                    resp_json = await resp.json()
+                    if 'result' in resp_json:
+                        market_books = resp_json['result']
+                        
+                        # Map runner names if market_runners provided
+                        if market_runners:
+                            for market_book in market_books:
+                                market_id = market_book['marketId']
+                                if market_id in market_runners:
+                                    runner_map = {
+                                        runner['selectionId']: runner['runnerName']
+                                        for runner in market_runners[market_id]
+                                    }
+                                    
+                                    # Add runner names to market book data
+                                    for runner in market_book.get('runners', []):
+                                        runner['runnerName'] = runner_map.get(
+                                            runner['selectionId'],
+                                            f"Unknown Runner ({runner['selectionId']})"
+                                        )
+                        
+                        self.logger.info('Successfully retrieved market books')
+                        return market_books
+                    else:
+                        self.logger.error(f'Error in response: {resp_json.get("error")}')
+                        return None
                 else:
-                    self.logger.error(f'Error in response: {resp_json.get("error")}')
+                    self.logger.error(f'Request failed with status code: {resp.status}')
                     return None
-            else:
-                self.logger.error(f'Request failed with status code: {resp.status_code}')
-                return None
-                
+                    
         except Exception as e:
             self.logger.error(f'Exception during list_market_book: {str(e)}')
             return None
 
-    def get_markets_with_odds(self) -> Tuple[Optional[List[Dict]], Optional[List[Dict]]]:
-        """
-        Get both market catalogue and price data for top football markets.
-        Ensures market books are properly aligned with their catalogs.
-        """
+    async def get_markets_with_odds(self) -> Tuple[Optional[List[Dict]], Optional[List[Dict]]]:
         """
         Get both market catalogue and price data for top football markets
         Returns tuple of (market_catalogue, market_books) or (None, None) if error
         """
         # Get market catalogue data first
-        markets = self.get_football_markets_for_today()
+        markets = await self.get_football_markets_for_today()
         if not markets:
             return None, None
             
@@ -228,7 +242,7 @@ class BetfairClient:
         market_ids = [market['marketId'] for market in markets]
         
         # Get market books with runner names mapped
-        market_books = self.list_market_book(market_ids, market_runners)
+        market_books = await self.list_market_book(market_ids, market_runners)
         
         # Ensure market books are in same order as catalogs
         if market_books:

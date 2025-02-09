@@ -1,9 +1,7 @@
-# File: src/commands/market_analysis_command.py
-
 """
 market_analysis_command.py
 
-Implements the Command pattern for market analysis operations.
+Implements async Command pattern for market analysis operations.
 Handles validation and analysis of betting markets according to strategy criteria.
 """
 
@@ -62,9 +60,9 @@ class MarketAnalysisCommand:
             
         return True, "Market meets criteria"
 
-    def analyze_market(self, market_data: Dict, request: MarketAnalysisRequest) -> Optional[Dict]:
+    async def analyze_market(self, market_data: Dict, request: MarketAnalysisRequest) -> Optional[Dict]:
         """
-        Analyze market for potential betting opportunities
+        Analyze market for potential betting opportunities asynchronously
         Returns bet details if criteria met, None otherwise
         """
         self.logger.info(f"Analyzing market {market_data.get('marketId')} for betting opportunity")
@@ -75,12 +73,12 @@ class MarketAnalysisCommand:
             return None
             
         # Check for active bets
-        if self.bet_repository.has_active_bets():
+        if await self.bet_repository.has_active_bets():
             self.logger.info("Active bet exists - skipping market analysis")
             return None
             
         # Get current balance for stake calculation
-        account_status = self.account_repository.get_account_status()
+        account_status = await self.account_repository.get_account_status()
         current_balance = account_status.current_balance
         
         # Analyze each runner (selection) in the market
@@ -118,16 +116,16 @@ class MarketAnalysisCommand:
                 
         return None
 
-    def execute(self, request: MarketAnalysisRequest) -> Optional[Dict]:
+    async def execute(self, request: MarketAnalysisRequest) -> Optional[Dict]:
         """
-        Execute market analysis
+        Execute market analysis asynchronously
         Returns betting opportunity if found, None otherwise
         """
         self.logger.info(f"Executing market analysis for market {request.market_id}")
         
         try:
             # Get market book data
-            market_books = self.betfair_client.list_market_book([request.market_id])
+            market_books = await self.betfair_client.list_market_book([request.market_id])
             if not market_books:
                 self.logger.error("Failed to retrieve market data")
                 return None
@@ -135,7 +133,7 @@ class MarketAnalysisCommand:
             market_book = market_books[0]
             
             # Analyze market
-            return self.analyze_market(market_book, request)
+            return await self.analyze_market(market_book, request)
             
         except Exception as e:
             self.logger.error(f"Error during market analysis: {str(e)}")

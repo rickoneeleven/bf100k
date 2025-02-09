@@ -1,22 +1,102 @@
-# File: src/main.py
-
 """
 main.py
 
-Entry point for the betting system. Handles initialization and main operation loop.
+Entry point for the betting system. Handles initialization, main operation loop,
+and graceful shutdown of async components.
 """
 
 import os
 import asyncio
+import signal
 import logging
 from dotenv import load_dotenv
+from typing import Optional
 
 from src.betting_system import BettingSystem
 from src.betfair_client import BetfairClient
 from src.repositories.bet_repository import BetRepository
 from src.repositories.account_repository import AccountRepository
 
+# Global variable for graceful shutdown
+shutdown_event: Optional[asyncio.Event] = None
+
+async def run_betting_cycle(betting_system: BettingSystem):
+    """Execute a single betting cycle"""
+    try:
+        # Scan for opportunities
+        opportunity = await betting_system.scan_markets()
+        
+        if opportunity:
+            # Place bet
+            bet = await betting_system.place_bet(opportunity)
+            if bet:
+                logging.info(
+                    f"Placed bet: Market {bet['market_id']}, "
+                    f"Stake: £{bet['stake']}, Odds: {bet['odds']}"
+                )
+    except Exception as e:
+        logging.error(f"Error in betting cycle: {str(e)}")
+
+async def monitor_active_bets(betting_system: BettingSystem):
+    """Monitor and update status of active bets"""
+    try:
+        active_bets = await betting_system.get_active_bets()
+        for bet in active_bets:
+            # In a real implementation, we would:
+            # 1. Check market status
+            # 2. Verify if bet is settled
+            # 3. Calculate profit/loss
+            # 4. Call settle_bet with actual results
+            pass
+    except Exception as e:
+        logging.error(f"Error monitoring active bets: {str(e)}")
+
+async def main_loop(betting_system: BettingSystem):
+    """Main operation loop"""
+    global shutdown_event
+    
+    while not shutdown_event.is_set():
+        try:
+            # Execute betting cycle
+            await run_betting_cycle(betting_system)
+            
+            # Monitor active bets
+            await monitor_active_bets(betting_system)
+            
+            # Wait before next cycle
+            await asyncio.sleep(60)  # Adjust timing as needed
+            
+        except Exception as e:
+            logging.error(f"Error in main loop: {str(e)}")
+            await asyncio.sleep(60)  # Wait before retry
+
+def handle_shutdown(signum, frame):
+    """Handle shutdown signals"""
+    logging.info("Shutdown signal received")
+    if shutdown_event:
+        shutdown_event.set()
+
+async def cleanup(betting_system: BettingSystem):
+    """Perform cleanup operations"""
+    try:
+        # Log final status
+        status = await betting_system.get_account_status()
+        logging.info(f"Final account status: {status}")
+        
+        # In a real implementation, we would:
+        # 1. Settle any pending bets
+        # 2. Close open connections
+        # 3. Flush logs
+        # 4. Save final state
+        pass
+    except Exception as e:
+        logging.error(f"Error during cleanup: {str(e)}")
+
 async def main():
+    """Entry point for the betting system"""
+    global shutdown_event
+    shutdown_event = asyncio.Event()
+    
     # Load environment variables
     load_dotenv()
     
@@ -29,7 +109,10 @@ async def main():
             logging.StreamHandler()
         ]
     )
-    logger = logging.getLogger('main')
+    
+    # Setup signal handlers
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
     
     try:
         # Initialize components
@@ -50,35 +133,28 @@ async def main():
         )
         
         # Login to Betfair
-        if not betfair_client.login():
-            logger.error("Failed to login to Betfair")
-            return
+        async with betfair_client as client:
+            if not await client.login():
+                logging.error("Failed to login to Betfair")
+                return
             
-        logger.info("Starting betting system")
-        
-        while True:
-            try:
-                # Scan for opportunities
-                opportunity = await betting_system.scan_markets()
-                
-                if opportunity:
-                    # Place bet
-                    bet = await betting_system.place_bet(opportunity)
-                    if bet:
-                        logger.info(
-                            f"Placed bet: Market {bet['market_id']}, "
-                            f"Stake: £{bet['stake']}, Odds: {bet['odds']}"
-                        )
-                
-                # Wait before next scan
-                await asyncio.sleep(60)  # Adjust timing as needed
-                
-            except Exception as e:
-                logger.error(f"Error in main loop: {str(e)}")
-                await asyncio.sleep(60)  # Wait before retry
-                
+            logging.info("Starting betting system")
+            
+            # Run main loop
+            await main_loop(betting_system)
+            
+            # Perform cleanup
+            await cleanup(betting_system)
+            
     except Exception as e:
-        logger.error(f"Fatal error: {str(e)}")
+        logging.error(f"Fatal error: {str(e)}")
         
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Process interrupted by user")
+    except Exception as e:
+        logging.error(f"Process terminated due to error: {str(e)}")
+    finally:
+        logging.info("Process shutdown complete")

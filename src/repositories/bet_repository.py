@@ -1,9 +1,7 @@
-# File: src/repositories/bet_repository.py
-
 """
 bet_repository.py
 
-Repository pattern implementation for bet data management.
+Async repository pattern implementation for bet data management.
 Handles storage and retrieval of bet records.
 """
 
@@ -12,6 +10,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
+import aiofiles
 
 class BetRepository:
     def __init__(self, data_dir: str = 'web/data/betting'):
@@ -30,70 +29,74 @@ class BetRepository:
         self.active_bets_file = self.data_dir / 'active_bets.json'
         self.settled_bets_file = self.data_dir / 'settled_bets.json'
         
-        self._initialize_storage()
+        # Ensure storage is initialized
+        self._ensure_storage()
 
-    def _initialize_storage(self) -> None:
-        """Initialize storage files if they don't exist"""
+    def _ensure_storage(self) -> None:
+        """Initialize storage files if they don't exist (sync operation during init)"""
         # Active bets structure
         if not self.active_bets_file.exists():
-            self._save_json(self.active_bets_file, {
-                "bets": [],
-                "last_updated": datetime.now(timezone.utc).isoformat()
-            })
+            with open(self.active_bets_file, 'w') as f:
+                json.dump({
+                    "bets": [],
+                    "last_updated": datetime.now(timezone.utc).isoformat()
+                }, f, indent=2)
         
         # Settled bets structure
         if not self.settled_bets_file.exists():
-            self._save_json(self.settled_bets_file, {
-                "bets": [],
-                "last_updated": datetime.now(timezone.utc).isoformat()
-            })
+            with open(self.settled_bets_file, 'w') as f:
+                json.dump({
+                    "bets": [],
+                    "last_updated": datetime.now(timezone.utc).isoformat()
+                }, f, indent=2)
 
-    def _save_json(self, file_path: Path, data: Dict) -> None:
-        """Save data to JSON file"""
-        with open(file_path, 'w') as f:
-            json.dump(data, f, indent=2)
+    async def _save_json(self, file_path: Path, data: Dict) -> None:
+        """Save data to JSON file asynchronously"""
+        async with aiofiles.open(file_path, 'w') as f:
+            await f.write(json.dumps(data, indent=2))
 
-    def _load_json(self, file_path: Path) -> Dict:
-        """Load data from JSON file"""
-        with open(file_path, 'r') as f:
-            return json.load(f)
+    async def _load_json(self, file_path: Path) -> Dict:
+        """Load data from JSON file asynchronously"""
+        async with aiofiles.open(file_path, 'r') as f:
+            content = await f.read()
+            return json.loads(content)
 
-    def has_active_bets(self) -> bool:
-        """Check if there are any active bets"""
-        active_bets = self._load_json(self.active_bets_file)
+    async def has_active_bets(self) -> bool:
+        """Check if there are any active bets asynchronously"""
+        active_bets = await self._load_json(self.active_bets_file)
         return len(active_bets["bets"]) > 0
 
-    def get_active_bets(self) -> List[Dict]:
-        """Retrieve all active bets"""
-        active_bets = self._load_json(self.active_bets_file)
+    async def get_active_bets(self) -> List[Dict]:
+        """Retrieve all active bets asynchronously"""
+        active_bets = await self._load_json(self.active_bets_file)
         return active_bets["bets"]
 
-    def get_settled_bets(self) -> List[Dict]:
-        """Retrieve all settled bets"""
-        settled_bets = self._load_json(self.settled_bets_file)
+    async def get_settled_bets(self) -> List[Dict]:
+        """Retrieve all settled bets asynchronously"""
+        settled_bets = await self._load_json(self.settled_bets_file)
         return settled_bets["bets"]
 
-    def get_bet_by_market_id(self, market_id: str) -> Optional[Dict]:
-        """Retrieve specific bet by market ID"""
+    async def get_bet_by_market_id(self, market_id: str) -> Optional[Dict]:
+        """Retrieve specific bet by market ID asynchronously"""
         # Check active bets first
-        active_bets = self._load_json(self.active_bets_file)
+        active_bets = await self._load_json(self.active_bets_file)
         for bet in active_bets["bets"]:
             if bet["market_id"] == market_id:
                 return bet
         
         # Check settled bets if not found in active
-        settled_bets = self._load_json(self.settled_bets_file)
+        settled_bets = await self._load_json(self.settled_bets_file)
         for bet in settled_bets["bets"]:
             if bet["market_id"] == market_id:
                 return bet
         
         return None
 
-    def record_bet_placement(self, bet_details: Dict) -> None:
-        """Record a new bet placement"""
+    async def record_bet_placement(self, bet_details: Dict) -> None:
+        """Record a new bet placement asynchronously"""
         self.logger.info(f"Recording bet placement for market {bet_details['market_id']}")
         
-        active_bets = self._load_json(self.active_bets_file)
+        active_bets = await self._load_json(self.active_bets_file)
         
         # Verify no duplicate market IDs
         if any(bet["market_id"] == bet_details["market_id"] for bet in active_bets["bets"]):
@@ -103,16 +106,16 @@ class BetRepository:
         active_bets["bets"].append(bet_details)
         active_bets["last_updated"] = datetime.now(timezone.utc).isoformat()
         
-        self._save_json(self.active_bets_file, active_bets)
+        await self._save_json(self.active_bets_file, active_bets)
         self.logger.info(f"Successfully recorded bet placement")
 
-    def record_bet_settlement(self, bet_details: Dict, won: bool, profit: float) -> None:
-        """Record settlement of a bet"""
+    async def record_bet_settlement(self, bet_details: Dict, won: bool, profit: float) -> None:
+        """Record settlement of a bet asynchronously"""
         self.logger.info(f"Recording bet settlement for market {bet_details['market_id']}")
         
         # Load both files
-        active_bets = self._load_json(self.active_bets_file)
-        settled_bets = self._load_json(self.settled_bets_file)
+        active_bets = await self._load_json(self.active_bets_file)
+        settled_bets = await self._load_json(self.settled_bets_file)
         
         # Remove bet from active bets
         active_bets["bets"] = [
@@ -131,8 +134,8 @@ class BetRepository:
         settled_bets["last_updated"] = datetime.now(timezone.utc).isoformat()
         
         # Save both files
-        self._save_json(self.active_bets_file, active_bets)
-        self._save_json(self.settled_bets_file, settled_bets)
+        await self._save_json(self.active_bets_file, active_bets)
+        await self._save_json(self.settled_bets_file, settled_bets)
         
         self.logger.info(
             f"Successfully recorded bet settlement: "

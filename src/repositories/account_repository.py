@@ -1,7 +1,7 @@
 """
 account_repository.py
 
-Repository pattern implementation for account data management.
+Async repository pattern implementation for account data management.
 Handles storage and retrieval of account status and balance.
 """
 
@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
+import aiofiles
 
 @dataclass
 class AccountStatus:
@@ -37,10 +38,11 @@ class AccountRepository:
         # Initialize file path
         self.account_status_file = self.data_dir / 'account_status.json'
         
-        self._initialize_storage()
+        # Ensure storage is initialized
+        self._ensure_storage()
 
-    def _initialize_storage(self) -> None:
-        """Initialize storage file if it doesn't exist"""
+    def _ensure_storage(self) -> None:
+        """Initialize storage file if it doesn't exist (sync operation during init)"""
         if not self.account_status_file.exists():
             initial_status = {
                 "current_balance": 0.0,
@@ -49,31 +51,33 @@ class AccountRepository:
                 "successful_bets": 0,
                 "last_updated": datetime.now(timezone.utc).isoformat()
             }
-            self._save_json(self.account_status_file, initial_status)
+            with open(self.account_status_file, 'w') as f:
+                json.dump(initial_status, f, indent=2)
 
-    def _save_json(self, file_path: Path, data: Dict) -> None:
-        """Save data to JSON file"""
-        with open(file_path, 'w') as f:
-            json.dump(data, f, indent=2)
+    async def _save_json(self, file_path: Path, data: Dict) -> None:
+        """Save data to JSON file asynchronously"""
+        async with aiofiles.open(file_path, 'w') as f:
+            await f.write(json.dumps(data, indent=2))
 
-    def _load_json(self, file_path: Path) -> Dict:
-        """Load data from JSON file"""
-        with open(file_path, 'r') as f:
-            return json.load(f)
+    async def _load_json(self, file_path: Path) -> Dict:
+        """Load data from JSON file asynchronously"""
+        async with aiofiles.open(file_path, 'r') as f:
+            content = await f.read()
+            return json.loads(content)
 
-    def get_account_status(self) -> AccountStatus:
+    async def get_account_status(self) -> AccountStatus:
         """
-        Get current account status
+        Get current account status asynchronously
         
         Returns:
             AccountStatus object containing current account information
         """
-        data = self._load_json(self.account_status_file)
+        data = await self._load_json(self.account_status_file)
         return AccountStatus(**data)
 
-    def update_balance(self, amount_change: float) -> None:
+    async def update_balance(self, amount_change: float) -> None:
         """
-        Update account balance
+        Update account balance asynchronously
         
         Args:
             amount_change: Amount to add/subtract from balance (negative for deductions)
@@ -83,7 +87,7 @@ class AccountRepository:
         """
         self.logger.info(f"Updating balance by {amount_change}")
         
-        data = self._load_json(self.account_status_file)
+        data = await self._load_json(self.account_status_file)
         new_balance = data["current_balance"] + amount_change
         
         if new_balance < 0:
@@ -92,44 +96,44 @@ class AccountRepository:
         data["current_balance"] = new_balance
         data["last_updated"] = datetime.now(timezone.utc).isoformat()
         
-        self._save_json(self.account_status_file, data)
+        await self._save_json(self.account_status_file, data)
         self.logger.info(f"New balance: £{new_balance}")
 
-    def update_bet_stats(self, bet_won: bool) -> None:
+    async def update_bet_stats(self, bet_won: bool) -> None:
         """
-        Update betting statistics
+        Update betting statistics asynchronously
         
         Args:
             bet_won: Whether the bet was successful
         """
         self.logger.info(f"Updating bet statistics - Won: {bet_won}")
         
-        data = self._load_json(self.account_status_file)
+        data = await self._load_json(self.account_status_file)
         data["total_bets_placed"] += 1
         if bet_won:
             data["successful_bets"] += 1
         data["last_updated"] = datetime.now(timezone.utc).isoformat()
         
-        self._save_json(self.account_status_file, data)
+        await self._save_json(self.account_status_file, data)
         
         self.logger.info(
             f"Updated stats: Total bets: {data['total_bets_placed']}, "
             f"Successful: {data['successful_bets']}"
         )
 
-    def check_target_reached(self) -> bool:
+    async def check_target_reached(self) -> bool:
         """
-        Check if target amount has been reached
+        Check if target amount has been reached asynchronously
         
         Returns:
             bool: True if current balance >= target amount, False otherwise
         """
-        status = self.get_account_status()
+        status = await self.get_account_status()
         return status.current_balance >= status.target_amount
 
-    def reset_account_stats(self, initial_balance: float = 0.0) -> None:
+    async def reset_account_stats(self, initial_balance: float = 0.0) -> None:
         """
-        Reset account statistics to initial state
+        Reset account statistics to initial state asynchronously
         
         Args:
             initial_balance: Starting balance for new session
@@ -150,12 +154,12 @@ class AccountRepository:
             "last_updated": datetime.now(timezone.utc).isoformat()
         }
         
-        self._save_json(self.account_status_file, initial_status)
+        await self._save_json(self.account_status_file, initial_status)
         self.logger.info("Account statistics reset successfully")
 
-    def update_target_amount(self, new_target: float) -> None:
+    async def update_target_amount(self, new_target: float) -> None:
         """
-        Update the target amount
+        Update the target amount asynchronously
         
         Args:
             new_target: New target amount to set
@@ -168,31 +172,31 @@ class AccountRepository:
             
         self.logger.info(f"Updating target amount to: £{new_target}")
         
-        data = self._load_json(self.account_status_file)
+        data = await self._load_json(self.account_status_file)
         data["target_amount"] = new_target
         data["last_updated"] = datetime.now(timezone.utc).isoformat()
         
-        self._save_json(self.account_status_file, data)
+        await self._save_json(self.account_status_file, data)
         self.logger.info("Target amount updated successfully")
 
-    def get_profit_loss(self) -> float:
+    async def get_profit_loss(self) -> float:
         """
-        Calculate total profit/loss from initial balance
+        Calculate total profit/loss from initial balance asynchronously
         
         Returns:
             float: Current balance minus initial balance
         """
-        status = self.get_account_status()
+        status = await self.get_account_status()
         return status.current_balance - 0.0  # Assuming initial balance was 0.0
 
-    def get_win_rate(self) -> float:
+    async def get_win_rate(self) -> float:
         """
-        Calculate win rate as percentage
+        Calculate win rate as percentage asynchronously
         
         Returns:
             float: Win rate percentage (0-100)
         """
-        status = self.get_account_status()
+        status = await self.get_account_status()
         if status.total_bets_placed == 0:
             return 0.0
         return (status.successful_bets / status.total_bets_placed) * 100.0
