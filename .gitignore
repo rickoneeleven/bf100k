@@ -34,9 +34,9 @@ certs/*
 !certs/.gitkeep
 
 # Environment variables
-env
+.env
 env.*
-!env_example
+!.env_example
 
 # IDE
 .idea/

@@ -12,10 +12,10 @@ import logging
 from dotenv import load_dotenv
 from typing import Optional
 
-from betting_system import BettingSystem
-from betfair_client import BetfairClient
-from repositories.bet_repository import BetRepository
-from repositories.account_repository import AccountRepository
+from .betting_system import BettingSystem
+from .betfair_client import BetfairClient
+from .repositories.bet_repository import BetRepository
+from .repositories.account_repository import AccountRepository
 
 # Global variable for graceful shutdown
 shutdown_event: Optional[asyncio.Event] = None

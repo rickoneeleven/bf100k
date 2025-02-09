@@ -9,12 +9,12 @@ import logging
 from typing import Optional, Dict, List
 from datetime import datetime, timezone
 
-from src.betfair_client import BetfairClient
-from src.commands.market_analysis_command import MarketAnalysisCommand, MarketAnalysisRequest
-from src.commands.place_bet_command import PlaceBetCommand, PlaceBetRequest
-from src.commands.settle_bet_command import BetSettlementCommand, BetSettlementRequest
-from src.repositories.bet_repository import BetRepository
-from src.repositories.account_repository import AccountRepository
+from .betfair_client import BetfairClient
+from .commands.market_analysis_command import MarketAnalysisCommand, MarketAnalysisRequest
+from .commands.place_bet_command import PlaceBetCommand, PlaceBetRequest
+from .commands.settle_bet_command import BetSettlementCommand, BetSettlementRequest
+from .repositories.bet_repository import BetRepository
+from .repositories.account_repository import AccountRepository
 
 class BettingSystem:
     def __init__(

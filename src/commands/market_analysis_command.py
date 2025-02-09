@@ -10,9 +10,9 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 import logging
 
-from src.repositories.bet_repository import BetRepository
-from src.repositories.account_repository import AccountRepository
-from src.betfair_client import BetfairClient
+from ..repositories.bet_repository import BetRepository
+from ..repositories.account_repository import AccountRepository
+from ..betfair_client import BetfairClient
 
 @dataclass
 class MarketAnalysisRequest:
