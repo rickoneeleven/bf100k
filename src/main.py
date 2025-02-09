@@ -63,7 +63,7 @@ async def monitor_active_bets(betting_system: BettingSystem):
         logging.error(f"Error monitoring active bets: {str(e)}")
 
 async def main_loop(betting_system: BettingSystem):
-    """Main operation loop"""
+    """Main operation loop with faster shutdown response"""
     global shutdown_event
     
     while not shutdown_event.is_set():
@@ -74,12 +74,19 @@ async def main_loop(betting_system: BettingSystem):
             # Monitor active bets
             await monitor_active_bets(betting_system)
             
-            # Wait before next cycle
-            await asyncio.sleep(60)  # Adjust timing as needed
-            
+            # Break the long sleep into shorter intervals to check shutdown_event more frequently
+            for _ in range(60):  # 60 one-second intervals
+                if shutdown_event.is_set():
+                    break
+                await asyncio.sleep(1)  # Check shutdown_event every second
+                
         except Exception as e:
             logging.error(f"Error in main loop: {str(e)}")
-            await asyncio.sleep(60)  # Wait before retry
+            # Shorter error retry interval
+            for _ in range(5):  # 5 one-second intervals
+                if shutdown_event.is_set():
+                    break
+                await asyncio.sleep(1)
 
 def handle_shutdown(signum, frame):
     """Handle shutdown signals"""
@@ -94,12 +101,11 @@ async def cleanup(betting_system: BettingSystem):
         status = await betting_system.get_account_status()
         logging.info(f"Final account status: {status}")
         
-        # In a real implementation, we would:
-        # 1. Settle any pending bets
-        # 2. Close open connections
-        # 3. Flush logs
-        # 4. Save final state
-        pass
+        # Close any open connections
+        if hasattr(betting_system.betfair_client, 'close_session'):
+            await betting_system.betfair_client.close_session()
+        
+        logging.info("Cleanup completed")
     except Exception as e:
         logging.error(f"Error during cleanup: {str(e)}")
 
@@ -110,14 +116,6 @@ async def main():
     
     # Load environment variables
     load_dotenv()
-    
-    # Setup cleanup handler
-    def cleanup_tasks():
-        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-        [task.cancel() for task in tasks]
-        
-    loop = asyncio.get_event_loop()
-    loop.set_exception_handler(lambda loop, context: cleanup_tasks())
     
     # Setup logging
     logging.basicConfig(
@@ -160,14 +158,22 @@ async def main():
             
             logging.info("Starting betting system in DRY RUN mode")
             
-            # Run main loop
-            await main_loop(betting_system)
-            
-            # Perform cleanup
-            await cleanup(betting_system)
+            try:
+                # Run main loop
+                await main_loop(betting_system)
+            except asyncio.CancelledError:
+                logging.info("Main loop cancelled")
+            finally:
+                # Ensure cleanup runs
+                await cleanup(betting_system)
             
     except Exception as e:
         logging.error(f"Fatal error: {str(e)}")
+    finally:
+        # Ensure all tasks are cancelled
+        for task in asyncio.all_tasks():
+            if task is not asyncio.current_task():
+                task.cancel()
         
 if __name__ == "__main__":
     try:
