@@ -75,45 +75,29 @@ class MarketAnalysisCommand:
         Analyze market for potential betting opportunities asynchronously
         Returns bet details if criteria met, None otherwise
         """
-        self.logger.info(f"Analyzing market {market_data.get('marketId')} for betting opportunity")
+        event_name = market_data.get('eventName', 'Unknown Event')
+        self.logger.info(f"Analyzing match: {event_name} (Market: {market_data.get('marketId')})")
         
         # Skip if market is in-play
         if market_data.get('inplay'):
-            self.logger.info("Market is in-play - skipping")
+            self.logger.info(f"Match {event_name} is in-play - skipping")
             return None
             
         # Check for active bets
         if await self.bet_repository.has_active_bets():
-            self.logger.info("Active bet exists - skipping market analysis")
+            self.logger.info("Active bet exists - skipping match analysis")
             return None
             
         # Get current balance for stake calculation
         account_status = await self.account_repository.get_account_status()
         current_balance = account_status.current_balance
 
-        # Special handling for dry run fallback - only on 5th market after 2 loops
+        # Special handling for dry run fallback
         is_fifth_market = request.market_id == request.fifth_market_id
         if request.dry_run and request.loop_count >= 2 and is_fifth_market:
-            self.logger.info("Dry run fallback: Selecting The Draw (ID: 58805) on 5th market")
-            # Find runner with selection ID 58805 (The Draw)
-            for runner in market_data.get('runners', []):
-                if runner.get('selectionId') == 58805:
-                    ex = runner.get('ex', {})
-                    available_to_back = ex.get('availableToBack', [])
-                    
-                    if available_to_back:
-                        return {
-                            "market_id": market_data.get('marketId'),
-                            "selection_id": 58805,
-                            "runner_name": "The Draw",
-                            "odds": available_to_back[0].get('price'),
-                            "stake": current_balance,
-                            "available_volume": available_to_back[0].get('size'),
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "dry_run_fallback": True
-                        }
-            self.logger.warning("Could not find The Draw selection in fifth market")
+            self.logger.info(f"Dry run fallback: Looking for Draw in match: {event_name}")
             
+            draw_selection = self._find_draw_selection(market_data.get('runners', []))
             if draw_selection:
                 ex = draw_selection.get('ex', {})
                 available_to_back = ex.get('availableToBack', [])
@@ -121,14 +105,18 @@ class MarketAnalysisCommand:
                 if available_to_back:
                     return {
                         "market_id": market_data.get('marketId'),
-                        "selection_id": draw_selection.get('selectionId'),
-                        "runner_name": draw_selection.get('runnerName', 'The Draw'),
+                        "selection_id": draw_selection['selectionId'],
+                        "team_name": "The Draw",
+                        "event_name": event_name,
                         "odds": available_to_back[0].get('price'),
                         "stake": current_balance,
                         "available_volume": available_to_back[0].get('size'),
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                         "dry_run_fallback": True
                     }
+            
+            self.logger.warning(f"Could not find Draw selection in match: {event_name}")
+            return None
             
         # Normal market analysis
         for runner in market_data.get('runners', []):
@@ -138,7 +126,7 @@ class MarketAnalysisCommand:
             if not available_to_back:
                 continue
                 
-            # Get best back price and size
+            team_name = runner.get('teamName', 'Unknown Team')
             best_price = available_to_back[0].get('price')
             available_size = available_to_back[0].get('size')
             
@@ -151,19 +139,20 @@ class MarketAnalysisCommand:
             )
             
             if meets_criteria:
-                self.logger.info(f"Found opportunity for runner: {runner.get('runnerName', 'Unknown')}")
+                self.logger.info(f"Found opportunity for {team_name} in {event_name}")
                 
                 return {
                     "market_id": market_data.get('marketId'),
                     "selection_id": runner.get('selectionId'),
-                    "runner_name": runner.get('runnerName', 'Unknown'),
+                    "team_name": team_name,
+                    "event_name": event_name,
                     "odds": best_price,
                     "stake": current_balance,
                     "available_volume": available_size,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
             else:
-                self.logger.info(f"Market criteria not met: {reason}")
+                self.logger.info(f"Market criteria not met for {team_name} in {event_name}: {reason}")
                 
         return None
 
@@ -172,25 +161,40 @@ class MarketAnalysisCommand:
         Execute market analysis asynchronously
         Returns betting opportunity if found, None otherwise
         """
-        self.logger.info(f"Executing market analysis for market {request.market_id}")
+        self.logger.info(f"Executing market analysis for match with market ID: {request.market_id}")
         
         try:
-            # Get market book data with runner information
+            # First get the market catalog to get team names
+            async with self.betfair_client as client:
+                markets = await client.get_football_markets_for_today()
+                
+            if not markets:
+                self.logger.error("Failed to retrieve market catalog")
+                return None
+
+            # Find the relevant market data
+            market_data = next((m for m in markets if m['marketId'] == request.market_id), None)
+            if not market_data:
+                self.logger.error(f"Could not find market {request.market_id} in catalog")
+                return None
+
+            # Now get market book with runner information
             market_books = await self.betfair_client.list_market_book(
                 [request.market_id],
-                # Pass empty dict to ensure runner names are mapped
-                market_runners={}
+                {request.market_id: market_data.get('runners', [])}  # Pass the actual runners data
             )
             
             if not market_books:
-                self.logger.error("Failed to retrieve market data")
+                self.logger.error("Failed to retrieve match data")
                 return None
                 
             market_book = market_books[0]
+            # Add event name from catalog data
+            market_book['eventName'] = market_data.get('event', {}).get('name', 'Unknown Event')
             
             # Analyze market
             return await self.analyze_market(market_book, request)
             
         except Exception as e:
-            self.logger.error(f"Error during market analysis: {str(e)}")
+            self.logger.error(f"Error during match analysis: {str(e)}")
             return None

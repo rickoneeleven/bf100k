@@ -91,7 +91,7 @@ class BetfairClient:
                         resp_json = json.loads(resp_text)
                         if resp_json.get('loginStatus') == 'SUCCESS':
                             self.session_token = resp_json['sessionToken']
-                            self.logger.info('Successfully logged in to Betfair API')
+                            self.logger.info('Successfully logged in to Betfair')
                             return True
                         else:
                             self.logger.error(f'Login failed: {resp_json.get("loginStatus")}')
@@ -159,10 +159,16 @@ class BetfairClient:
                     resp_json = await resp.json()
                     if 'result' in resp_json:
                         result = resp_json['result']
-                        # Log the first market's runners to debug
-                        if result and len(result) > 0:
-                            self.logger.info(f"First market runners: {result[0].get('runners', [])}")
-                        self.logger.info('Successfully retrieved football markets')
+                        # Process teams information
+                        for market in result:
+                            if 'event' in market:
+                                market['eventName'] = market['event']['name']
+                            # Log the first market's teams to debug
+                            if result and len(result) > 0:
+                                teams = [runner.get('runnerName', 'Unknown Team') 
+                                       for runner in market.get('runners', [])]
+                                self.logger.info(f"Match: {market.get('eventName', 'Unknown Event')} - "
+                                               f"Teams: {' vs '.join(team for team in teams if team != 'The Draw')}")
                         return result
                     else:
                         self.logger.error(f'Error in response: {resp_json.get("error")}')
@@ -185,10 +191,10 @@ class BetfairClient:
         
         Args:
             market_ids: List of market IDs to retrieve
-            market_runners: Optional dict mapping market IDs to runner information
+            market_runners: Optional dict mapping market IDs to team information
         
         Returns:
-            List of market books with mapped runner names or None if request fails
+            List of market books with mapped team names or None if request fails
         """
         if not self.session_token:
             self.logger.error('No session token available - please login first')
@@ -228,25 +234,31 @@ class BetfairClient:
                     if 'result' in resp_json:
                         market_books = resp_json['result']
                         
-                        # Map runner names if market_runners provided
+                        # Map team names if market_runners provided
                         if market_runners:
                             for market_book in market_books:
                                 market_id = market_book['marketId']
                                 if market_id in market_runners:
-                                    runner_map = {
+                                    team_map = {
                                         runner['selectionId']: runner['runnerName']
                                         for runner in market_runners[market_id]
                                     }
-                                    self.logger.info(f"Created runner map for market {market_id}: {runner_map}")
                                     
-                                    # Add runner names to market book data
+                                    # Add team names to market book data
                                     for runner in market_book.get('runners', []):
-                                        runner['runnerName'] = runner_map.get(
+                                        runner['teamName'] = team_map.get(
                                             runner['selectionId'],
-                                            f"Unknown Runner ({runner['selectionId']})"
+                                            f"Unknown Team ({runner['selectionId']})"
                                         )
+                                        
+                                    # Log the mapped teams
+                                    teams = [runner.get('teamName', 'Unknown Team') 
+                                           for runner in market_book.get('runners', [])]
+                                    self.logger.info(
+                                        f"Processing odds for match: "
+                                        f"{' vs '.join(team for team in teams if team != 'The Draw')}"
+                                    )
                         
-                        self.logger.info('Successfully retrieved market books')
                         return market_books
                     else:
                         self.logger.error(f'Error in response: {resp_json.get("error")}')
@@ -269,17 +281,28 @@ class BetfairClient:
         if not markets:
             return None, None
             
-        # Create runner mapping from market catalog data
+        # Create team mapping from market catalog data
         market_runners = {
             market['marketId']: market.get('runners', [])
+            for market in markets
+        }
+
+        # Create event names mapping
+        event_names = {
+            market['marketId']: market.get('eventName', 'Unknown Event')
             for market in markets
         }
         
         # Get all market IDs in order
         market_ids = [market['marketId'] for market in markets]
         
-        # Get market books with runner names mapped
+        # Get market books with team names mapped
         market_books = await self.list_market_book(market_ids, market_runners)
+        
+        # Add event names to market books
+        if market_books:
+            for book in market_books:
+                book['eventName'] = event_names.get(book['marketId'], 'Unknown Event')
         
         # Ensure market books are in same order as catalogs
         if market_books:
