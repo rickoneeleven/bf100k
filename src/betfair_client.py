@@ -154,21 +154,25 @@ class BetfairClient:
                 if resp.status == 200:
                     resp_json = await resp.json()
                     if 'result' in resp_json:
-                        result = resp_json['result']
-                        # Process teams information and log summary
-                        if result:
+                        markets = resp_json['result']
+                        # Log details about returned markets
+                        if markets:
                             matches_info = []
-                            for market in result:
-                                if 'event' in market:
-                                    market['eventName'] = market['event']['name']
-                                teams = [runner.get('runnerName', 'Unknown Team') 
-                                       for runner in market.get('runners', [])]
-                                team_names = ' vs '.join(team for team in teams if team != 'The Draw')
-                                matches_info.append(f"  {market['eventName']} ({team_names})")
+                            for market in markets:
+                                runners = []
+                                event_name = market.get('event', {}).get('name', 'Unknown Event')
+                                for runner in market.get('runners', []):
+                                    runner['teamName'] = runner.get('runnerName', 'Unknown Team')
+                                    runners.append(runner['teamName'])
+                                
+                                team_names = ' vs '.join(
+                                    team for team in runners if team.lower() not in {'the draw', 'draw'}
+                                )
+                                matches_info.append(f"  {event_name} ({team_names})")
                             
-                            self.logger.info(f"Retrieved {len(result)} football matches:\n" + 
+                            self.logger.info(f"Retrieved {len(markets)} football matches:\n" + 
                                            "\n".join(matches_info))
-                        return result
+                        return markets
                     else:
                         self.logger.error(f'Error in response: {resp_json.get("error")}')
                         return None
@@ -190,7 +194,7 @@ class BetfairClient:
         
         Args:
             market_ids: List of market IDs to retrieve
-            market_runners: Optional dict mapping market IDs to team information
+            market_runners: Optional dict mapping market IDs to runner information
         
         Returns:
             List of market books with mapped team names or None if request fails
@@ -239,14 +243,14 @@ class BetfairClient:
                                 market_id = market_book['marketId']
                                 if market_id in market_runners:
                                     team_map = {
-                                        runner['selectionId']: runner['runnerName']
+                                        runner['selectionId']: runner['teamName']
                                         for runner in market_runners[market_id]
                                     }
                                     
                                     for runner in market_book.get('runners', []):
                                         runner['teamName'] = team_map.get(
                                             runner['selectionId'],
-                                            f"Unknown Team ({runner['selectionId']})"
+                                            'Unknown Team'
                                         )
                         
                         return market_books
@@ -279,7 +283,7 @@ class BetfairClient:
 
         # Create event names mapping
         event_names = {
-            market['marketId']: market.get('eventName', 'Unknown Event')
+            market['marketId']: market.get('event', {}).get('name', 'Unknown Event')
             for market in markets
         }
         
@@ -293,6 +297,17 @@ class BetfairClient:
         if market_books:
             for book in market_books:
                 book['eventName'] = event_names.get(book['marketId'], 'Unknown Event')
+                # Ensure each runner has teamName set
+                for runner in book.get('runners', []):
+                    if 'teamName' not in runner:
+                        market_id = book['marketId']
+                        runner_id = runner['selectionId']
+                        for market_runner in market_runners.get(market_id, []):
+                            if market_runner['selectionId'] == runner_id:
+                                runner['teamName'] = market_runner['teamName']
+                                break
+                        else:
+                            runner['teamName'] = 'Unknown Team'
         
         # Ensure market books are in same order as catalogs
         if market_books:

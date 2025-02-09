@@ -7,7 +7,7 @@ Handles validation and analysis of betting markets according to strategy criteri
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set
 import logging
 
 from ..repositories.bet_repository import BetRepository
@@ -26,6 +26,9 @@ class MarketAnalysisRequest:
     fifth_market_id: str = None
 
 class MarketAnalysisCommand:
+    # Set of valid draw selection names (case insensitive)
+    DRAW_VARIANTS: Set[str] = {'the draw', 'draw', 'empate', 'x'}
+
     def __init__(
         self,
         betfair_client: BetfairClient,
@@ -62,11 +65,35 @@ class MarketAnalysisCommand:
             
         return True, "meets criteria"
 
-    def _find_draw_selection(self, runners: List[Dict]) -> Optional[Dict]:
-        """Find the Draw selection in the runners list"""
+    def _find_draw_selection(self, runners: List[Dict], event_name: str) -> Optional[Dict]:
+        """
+        Find the Draw selection in the runners list with enhanced logging
+        
+        Args:
+            runners: List of runner dictionaries
+            event_name: Name of event for logging context
+            
+        Returns:
+            Dict containing draw selection if found, None otherwise
+        """
+        # Log all available runners for debugging
+        runner_names = [runner.get('teamName', 'Unknown') for runner in runners]
+        self.logger.info(
+            f"Available runners for {event_name}:\n" +
+            "\n".join(f"  - {name}" for name in runner_names)
+        )
+        
+        # Check each runner against known draw variants
         for runner in runners:
-            if runner.get('runnerName', '').lower() == 'the draw':
+            team_name = runner.get('teamName', '').lower()
+            if team_name in self.DRAW_VARIANTS:
+                self.logger.info(f"Found draw selection in {event_name}: {runner.get('teamName')}")
                 return runner
+                
+        self.logger.info(
+            f"No draw selection found in {event_name}. "
+            f"Known variants are: {', '.join(sorted(self.DRAW_VARIANTS))}"
+        )
         return None
 
     async def analyze_market(
@@ -93,20 +120,32 @@ class MarketAnalysisCommand:
         account_status = await self.account_repository.get_account_status()
         current_balance = account_status.current_balance
 
-        # Special handling for dry run fallback
+        # Special handling for dry run fallback with enhanced logging
         is_fifth_market = request.market_id == request.fifth_market_id
         if request.dry_run and request.loop_count >= 2 and is_fifth_market:
-            draw_selection = self._find_draw_selection(market_data.get('runners', []))
+            self.logger.info(
+                f"Attempting dry run fallback for {event_name}\n"
+                f"Market ID: {request.market_id}\n"
+                f"Fifth Market ID: {request.fifth_market_id}\n"
+                f"Loop Count: {request.loop_count}"
+            )
+            
+            draw_selection = self._find_draw_selection(market_data.get('runners', []), event_name)
             if draw_selection:
                 ex = draw_selection.get('ex', {})
                 available_to_back = ex.get('availableToBack', [])
                 
                 if available_to_back:
-                    self.logger.info(f"Dry run fallback: Found Draw selection in {event_name}")
+                    self.logger.info(
+                        f"Dry run fallback successful: Found Draw selection in {event_name}\n"
+                        f"Selection ID: {draw_selection['selectionId']}\n"
+                        f"Available Back Price: {available_to_back[0].get('price')}\n"
+                        f"Available Volume: {available_to_back[0].get('size')}"
+                    )
                     return {
                         "market_id": market_data.get('marketId'),
                         "selection_id": draw_selection['selectionId'],
-                        "team_name": "The Draw",
+                        "team_name": draw_selection.get('teamName', 'The Draw'),
                         "event_name": event_name,
                         "odds": available_to_back[0].get('price'),
                         "stake": current_balance,
@@ -114,8 +153,10 @@ class MarketAnalysisCommand:
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                         "dry_run_fallback": True
                     }
+                else:
+                    self.logger.info(f"Dry run fallback: Draw selection found but no prices available")
             
-            self.logger.info(f"Dry run fallback: No Draw selection in {event_name}")
+            self.logger.info(f"Dry run fallback: No valid Draw selection in {event_name}")
             return None
             
         # Normal market analysis
