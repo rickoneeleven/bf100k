@@ -12,10 +12,10 @@ import logging
 from dotenv import load_dotenv
 from typing import Optional
 
-from src.betting_system import BettingSystem
-from src.betfair_client import BetfairClient
-from src.repositories.bet_repository import BetRepository
-from src.repositories.account_repository import AccountRepository
+from betting_system import BettingSystem
+from betfair_client import BetfairClient
+from repositories.bet_repository import BetRepository
+from repositories.account_repository import AccountRepository
 
 # Global variable for graceful shutdown
 shutdown_event: Optional[asyncio.Event] = None
@@ -27,13 +27,24 @@ async def run_betting_cycle(betting_system: BettingSystem):
         opportunity = await betting_system.scan_markets()
         
         if opportunity:
-            # Place bet
-            bet = await betting_system.place_bet(opportunity)
-            if bet:
+            if betting_system.dry_run:
                 logging.info(
-                    f"Placed bet: Market {bet['market_id']}, "
-                    f"Stake: £{bet['stake']}, Odds: {bet['odds']}"
+                    f"[DRY RUN] Found betting opportunity:\n"
+                    f"Market ID: {opportunity['market_id']}\n"
+                    f"Selection ID: {opportunity['selection_id']}\n"
+                    f"Runner Name: {opportunity.get('runner_name', 'Unknown')}\n"
+                    f"Odds: {opportunity['odds']}\n"
+                    f"Stake: £{opportunity['stake']}\n"
+                    f"Available Volume: £{opportunity.get('available_volume', 'Unknown')}"
                 )
+            else:
+                # Place real bet
+                bet = await betting_system.place_bet(opportunity)
+                if bet:
+                    logging.info(
+                        f"Placed bet: Market {bet['market_id']}, "
+                        f"Stake: £{bet['stake']}, Odds: {bet['odds']}"
+                    )
     except Exception as e:
         logging.error(f"Error in betting cycle: {str(e)}")
 
@@ -125,11 +136,12 @@ async def main():
         bet_repository = BetRepository()
         account_repository = AccountRepository()
         
-        # Initialize system
+        # Initialize system in dry run mode
         betting_system = BettingSystem(
             betfair_client=betfair_client,
             bet_repository=bet_repository,
-            account_repository=account_repository
+            account_repository=account_repository,
+            dry_run=True  # Enable dry run mode
         )
         
         # Login to Betfair
@@ -138,7 +150,7 @@ async def main():
                 logging.error("Failed to login to Betfair")
                 return
             
-            logging.info("Starting betting system")
+            logging.info("Starting betting system in DRY RUN mode")
             
             # Run main loop
             await main_loop(betting_system)

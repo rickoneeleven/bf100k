@@ -21,11 +21,13 @@ class BettingSystem:
         self,
         betfair_client: BetfairClient,
         bet_repository: BetRepository,
-        account_repository: AccountRepository
+        account_repository: AccountRepository,
+        dry_run: bool = True  # Default to dry run for safety
     ):
         self.betfair_client = betfair_client
         self.bet_repository = bet_repository
         self.account_repository = account_repository
+        self.dry_run = dry_run
         
         # Initialize commands
         self.market_analysis = MarketAnalysisCommand(
@@ -44,28 +46,32 @@ class BettingSystem:
             account_repository
         )
         
-        # Setup logging
+        # Setup logging with dry run indicator
         self.logger = logging.getLogger('BettingSystem')
         self.logger.setLevel(logging.INFO)
         handler = logging.FileHandler('web/logs/betting_system.log')
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - [DRY RUN] %(levelname)s - %(message)s' 
+            if dry_run else
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
 
     async def scan_markets(self) -> Optional[Dict]:
-        """
-        Scan available markets for betting opportunities asynchronously
-        Returns potential bet if found, None otherwise
-        """
-        self.logger.info("Scanning markets for betting opportunities")
+        """Scan available markets for betting opportunities"""
+        self.logger.info(
+            "Scanning markets for betting opportunities (DRY RUN)" 
+            if self.dry_run else
+            "Scanning markets for betting opportunities"
+        )
         
         try:
-            # Check for active bets first
+            # Original scanning logic remains the same
             if await self.bet_repository.has_active_bets():
                 self.logger.info("Active bet exists - skipping market scan")
                 return None
             
-            # Get available markets
             async with self.betfair_client as client:
                 markets, market_books = await client.get_markets_with_odds()
                 
@@ -76,8 +82,6 @@ class BettingSystem:
             # Analyze each market
             for market, market_book in zip(markets, market_books):
                 market_id = market['marketId']
-                
-                # Create analysis request
                 request = MarketAnalysisRequest(
                     market_id=market_id,
                     min_odds=3.0,
@@ -85,13 +89,17 @@ class BettingSystem:
                     liquidity_factor=1.1
                 )
                 
-                # Execute market analysis
                 betting_opportunity = await self.market_analysis.execute(request)
                 if betting_opportunity:
-                    self.logger.info(f"Found betting opportunity in market {market_id}")
+                    if self.dry_run:
+                        self.logger.info(
+                            f"[DRY RUN] Would place bet: Market {betting_opportunity['market_id']}, "
+                            f"Selection {betting_opportunity['selection_id']}, "
+                            f"Odds {betting_opportunity['odds']}, "
+                            f"Stake £{betting_opportunity['stake']}"
+                        )
                     return betting_opportunity
             
-            self.logger.info("No suitable betting opportunities found")
             return None
             
         except Exception as e:
@@ -99,14 +107,18 @@ class BettingSystem:
             return None
 
     async def place_bet(self, betting_opportunity: Dict) -> Optional[Dict]:
-        """
-        Place a bet based on identified opportunity asynchronously
-        Returns bet details if successful, None otherwise
-        """
-        self.logger.info(f"Attempting to place bet for market {betting_opportunity['market_id']}")
-        
+        """Place a bet based on identified opportunity"""
+        if self.dry_run:
+            self.logger.info(
+                f"[DRY RUN] Would place bet: Market {betting_opportunity['market_id']}, "
+                f"Selection {betting_opportunity['selection_id']}, "
+                f"Odds {betting_opportunity['odds']}, "
+                f"Stake £{betting_opportunity['stake']}"
+            )
+            return betting_opportunity
+            
+        # Original bet placement logic for non-dry run
         try:
-            # Create bet placement request
             request = PlaceBetRequest(
                 market_id=betting_opportunity['market_id'],
                 selection_id=betting_opportunity['selection_id'],
@@ -114,22 +126,18 @@ class BettingSystem:
                 stake=betting_opportunity['stake']
             )
             
-            # Execute bet placement
             bet_details = await self.place_bet.execute(request)
-            
             if bet_details:
                 self.logger.info(
-                    f"Successfully placed bet in market {request.market_id}, "
+                    f"Successfully placed bet: Market {request.market_id}, "
                     f"stake: £{request.stake}, odds: {request.odds}"
                 )
-                return bet_details
-            else:
-                self.logger.error("Bet placement failed")
-                return None
+            return bet_details
                 
         except Exception as e:
             self.logger.error(f"Error during bet placement: {str(e)}")
             return None
+
 
     async def settle_bet(self, market_id: str, won: bool, profit: float) -> Optional[Dict]:
         """
