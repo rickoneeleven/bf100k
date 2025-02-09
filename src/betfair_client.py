@@ -73,7 +73,6 @@ class BetfairClient:
                 'password': os.getenv('BETFAIR_PASSWORD')
             }
             
-            # Create SSL context using standard ssl library
             ssl_context = ssl.create_default_context()
             ssl_context.load_cert_chain(self.cert_file, self.key_file)
             
@@ -84,10 +83,8 @@ class BetfairClient:
                 ssl=ssl_context
             ) as resp:
                 if resp.status == 200:
-                    # First get the response as text
                     resp_text = await resp.text()
                     try:
-                        # Then parse it as JSON
                         resp_json = json.loads(resp_text)
                         if resp_json.get('loginStatus') == 'SUCCESS':
                             self.session_token = resp_json['sessionToken']
@@ -116,7 +113,6 @@ class BetfairClient:
         try:
             session = await self.ensure_session()
             
-            # Get today's date in ISO format
             today = datetime.now(timezone.utc).strftime('%Y-%m-%dT00:00:00Z')
             tomorrow = datetime.now(timezone.utc).replace(hour=23, minute=59, second=59).strftime('%Y-%m-%dT%H:%M:%SZ')
             
@@ -159,16 +155,19 @@ class BetfairClient:
                     resp_json = await resp.json()
                     if 'result' in resp_json:
                         result = resp_json['result']
-                        # Process teams information
-                        for market in result:
-                            if 'event' in market:
-                                market['eventName'] = market['event']['name']
-                            # Log the first market's teams to debug
-                            if result and len(result) > 0:
+                        # Process teams information and log summary
+                        if result:
+                            matches_info = []
+                            for market in result:
+                                if 'event' in market:
+                                    market['eventName'] = market['event']['name']
                                 teams = [runner.get('runnerName', 'Unknown Team') 
                                        for runner in market.get('runners', [])]
-                                self.logger.info(f"Match: {market.get('eventName', 'Unknown Event')} - "
-                                               f"Teams: {' vs '.join(team for team in teams if team != 'The Draw')}")
+                                team_names = ' vs '.join(team for team in teams if team != 'The Draw')
+                                matches_info.append(f"  {market['eventName']} ({team_names})")
+                            
+                            self.logger.info(f"Retrieved {len(result)} football matches:\n" + 
+                                           "\n".join(matches_info))
                         return result
                     else:
                         self.logger.error(f'Error in response: {resp_json.get("error")}')
@@ -244,20 +243,11 @@ class BetfairClient:
                                         for runner in market_runners[market_id]
                                     }
                                     
-                                    # Add team names to market book data
                                     for runner in market_book.get('runners', []):
                                         runner['teamName'] = team_map.get(
                                             runner['selectionId'],
                                             f"Unknown Team ({runner['selectionId']})"
                                         )
-                                        
-                                    # Log the mapped teams
-                                    teams = [runner.get('teamName', 'Unknown Team') 
-                                           for runner in market_book.get('runners', [])]
-                                    self.logger.info(
-                                        f"Processing odds for match: "
-                                        f"{' vs '.join(team for team in teams if team != 'The Draw')}"
-                                    )
                         
                         return market_books
                     else:

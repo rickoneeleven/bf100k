@@ -23,7 +23,7 @@ class MarketAnalysisRequest:
     liquidity_factor: float = 1.1
     dry_run: bool = True
     loop_count: int = 0
-    fifth_market_id: str = None  # ID of the 5th market in the list
+    fifth_market_id: str = None
 
 class MarketAnalysisCommand:
     def __init__(
@@ -36,7 +36,6 @@ class MarketAnalysisCommand:
         self.bet_repository = bet_repository
         self.account_repository = account_repository
         
-        # Setup logging
         self.logger = logging.getLogger('MarketAnalysisCommand')
         self.logger.setLevel(logging.INFO)
         handler = logging.FileHandler('web/logs/commands.log')
@@ -56,12 +55,12 @@ class MarketAnalysisCommand:
         Returns: (meets_criteria: bool, reason: str)
         """
         if odds < request.min_odds or odds > request.max_odds:
-            return False, f"Odds {odds} outside target range ({request.min_odds}-{request.max_odds})"
+            return False, f"odds {odds} outside range {request.min_odds}-{request.max_odds}"
             
         if available_volume < required_stake * request.liquidity_factor:
-            return False, f"Insufficient liquidity: {available_volume} < {required_stake * request.liquidity_factor}"
+            return False, f"liquidity {available_volume:.2f} < required {required_stake * request.liquidity_factor:.2f}"
             
-        return True, "Market meets criteria"
+        return True, "meets criteria"
 
     def _find_draw_selection(self, runners: List[Dict]) -> Optional[Dict]:
         """Find the Draw selection in the runners list"""
@@ -70,22 +69,24 @@ class MarketAnalysisCommand:
                 return runner
         return None
 
-    async def analyze_market(self, market_data: Dict, request: MarketAnalysisRequest) -> Optional[Dict]:
+    async def analyze_market(
+        self, 
+        market_data: Dict, 
+        request: MarketAnalysisRequest,
+        event_name: str
+    ) -> Optional[Dict]:
         """
         Analyze market for potential betting opportunities asynchronously
         Returns bet details if criteria met, None otherwise
         """
-        event_name = market_data.get('eventName', 'Unknown Event')
-        self.logger.info(f"Analyzing match: {event_name} (Market: {market_data.get('marketId')})")
-        
         # Skip if market is in-play
         if market_data.get('inplay'):
-            self.logger.info(f"Match {event_name} is in-play - skipping")
+            self.logger.info(f"{event_name}: Skipping - match is in-play")
             return None
             
         # Check for active bets
         if await self.bet_repository.has_active_bets():
-            self.logger.info("Active bet exists - skipping match analysis")
+            self.logger.info("Skipping analysis - active bet exists")
             return None
             
         # Get current balance for stake calculation
@@ -95,14 +96,13 @@ class MarketAnalysisCommand:
         # Special handling for dry run fallback
         is_fifth_market = request.market_id == request.fifth_market_id
         if request.dry_run and request.loop_count >= 2 and is_fifth_market:
-            self.logger.info(f"Dry run fallback: Looking for Draw in match: {event_name}")
-            
             draw_selection = self._find_draw_selection(market_data.get('runners', []))
             if draw_selection:
                 ex = draw_selection.get('ex', {})
                 available_to_back = ex.get('availableToBack', [])
                 
                 if available_to_back:
+                    self.logger.info(f"Dry run fallback: Found Draw selection in {event_name}")
                     return {
                         "market_id": market_data.get('marketId'),
                         "selection_id": draw_selection['selectionId'],
@@ -115,22 +115,24 @@ class MarketAnalysisCommand:
                         "dry_run_fallback": True
                     }
             
-            self.logger.warning(f"Could not find Draw selection in match: {event_name}")
+            self.logger.info(f"Dry run fallback: No Draw selection in {event_name}")
             return None
             
         # Normal market analysis
+        self.logger.info(f"\nAnalyzing {event_name}:")
         for runner in market_data.get('runners', []):
             ex = runner.get('ex', {})
             available_to_back = ex.get('availableToBack', [])
             
+            team_name = runner.get('teamName', 'Unknown Team')
             if not available_to_back:
+                self.logger.info(f"  {team_name}: No prices available")
                 continue
                 
-            team_name = runner.get('teamName', 'Unknown Team')
             best_price = available_to_back[0].get('price')
             available_size = available_to_back[0].get('size')
             
-            # Check market criteria
+            # Validate criteria
             meets_criteria, reason = self.validate_market_criteria(
                 best_price,
                 available_size,
@@ -138,9 +140,16 @@ class MarketAnalysisCommand:
                 request
             )
             
+            status = "✓" if meets_criteria else "✗"
+            self.logger.info(
+                f"  {team_name}:\n"
+                f"    Odds: {best_price:.2f}\n"
+                f"    Available: £{available_size:.2f}\n"
+                f"    Required: £{current_balance * request.liquidity_factor:.2f}\n"
+                f"    Status: {status} {reason}"
+            )
+            
             if meets_criteria:
-                self.logger.info(f"Found opportunity for {team_name} in {event_name}")
-                
                 return {
                     "market_id": market_data.get('marketId'),
                     "selection_id": runner.get('selectionId'),
@@ -151,50 +160,23 @@ class MarketAnalysisCommand:
                     "available_volume": available_size,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
-            else:
-                self.logger.info(f"Market criteria not met for {team_name} in {event_name}: {reason}")
-                
+        
         return None
 
-    async def execute(self, request: MarketAnalysisRequest) -> Optional[Dict]:
+    async def execute(
+        self, 
+        request: MarketAnalysisRequest, 
+        market: Dict,
+        market_book: Dict
+    ) -> Optional[Dict]:
         """
         Execute market analysis asynchronously
         Returns betting opportunity if found, None otherwise
         """
-        self.logger.info(f"Executing market analysis for match with market ID: {request.market_id}")
-        
         try:
-            # First get the market catalog to get team names
-            async with self.betfair_client as client:
-                markets = await client.get_football_markets_for_today()
-                
-            if not markets:
-                self.logger.error("Failed to retrieve market catalog")
-                return None
-
-            # Find the relevant market data
-            market_data = next((m for m in markets if m['marketId'] == request.market_id), None)
-            if not market_data:
-                self.logger.error(f"Could not find market {request.market_id} in catalog")
-                return None
-
-            # Now get market book with runner information
-            market_books = await self.betfair_client.list_market_book(
-                [request.market_id],
-                {request.market_id: market_data.get('runners', [])}  # Pass the actual runners data
-            )
-            
-            if not market_books:
-                self.logger.error("Failed to retrieve match data")
-                return None
-                
-            market_book = market_books[0]
-            # Add event name from catalog data
-            market_book['eventName'] = market_data.get('event', {}).get('name', 'Unknown Event')
-            
-            # Analyze market
-            return await self.analyze_market(market_book, request)
+            event_name = market.get('event', {}).get('name', 'Unknown Event')
+            return await self.analyze_market(market_book, request, event_name)
             
         except Exception as e:
-            self.logger.error(f"Error during match analysis: {str(e)}")
+            self.logger.error(f"Error during market analysis: {str(e)}")
             return None

@@ -82,11 +82,10 @@ class BettingSystem:
             # Get the fifth market ID if available
             fifth_market_id = markets[4]['marketId'] if len(markets) >= 5 else None
             
-            # Analyze each market
+            # Analyze each market using corresponding market book
             for market, market_book in zip(markets, market_books):
-                market_id = market['marketId']
                 request = MarketAnalysisRequest(
-                    market_id=market_id,
+                    market_id=market['marketId'],
                     min_odds=3.0,
                     max_odds=4.0,
                     liquidity_factor=1.1,
@@ -95,7 +94,7 @@ class BettingSystem:
                     fifth_market_id=fifth_market_id
                 )
                 
-                betting_opportunity = await self.market_analysis.execute(request)
+                betting_opportunity = await self.market_analysis.execute(request, market, market_book)
                 if betting_opportunity:
                     if self.dry_run:
                         self.logger.info(
@@ -104,7 +103,7 @@ class BettingSystem:
                             f"Selection: {betting_opportunity['team_name']}\n"
                             f"Odds: {betting_opportunity['odds']}\n"
                             f"Stake: £{betting_opportunity['stake']}\n"
-                            f"Available Volume: £{betting_opportunity['available_volume']}"
+                            f"Available Volume: £{betting_opportunity.get('available_volume', 'Unknown')}"
                         )
                     return betting_opportunity
 
@@ -113,7 +112,7 @@ class BettingSystem:
             return None
             
         except Exception as e:
-            self.logger.error(f"Error during market scan: {str(e)}")
+            self.logger.error(f"Error in betting cycle: {str(e)}")
             return None
 
     async def place_bet(self, betting_opportunity: Dict) -> Optional[Dict]:
