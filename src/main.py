@@ -111,6 +111,14 @@ async def main():
     # Load environment variables
     load_dotenv()
     
+    # Setup cleanup handler
+    def cleanup_tasks():
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        [task.cancel() for task in tasks]
+        
+    loop = asyncio.get_event_loop()
+    loop.set_exception_handler(lambda loop, context: cleanup_tasks())
+    
     # Setup logging
     logging.basicConfig(
         level=logging.INFO,

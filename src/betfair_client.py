@@ -9,6 +9,7 @@ import os
 import json
 import logging
 import aiohttp
+import ssl
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
 
@@ -32,15 +33,25 @@ class BetfairClient:
         self.cert_login_url = 'https://identitysso-cert.betfair.com/api/certlogin'
         self.betting_url = 'https://api.betfair.com/exchange/betting/json-rpc/v1'
 
+    async def create_session(self):
+        """Create HTTP session if not exists"""
+        if not self.http_session or self.http_session.closed:
+            self.http_session = aiohttp.ClientSession()
+
+    async def close_session(self):
+        """Close HTTP session if exists"""
+        if self.http_session and not self.http_session.closed:
+            await self.http_session.close()
+            self.http_session = None
+
     async def __aenter__(self):
         """Async context manager entry"""
-        self.http_session = aiohttp.ClientSession()
+        await self.create_session()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit"""
-        if self.http_session:
-            await self.http_session.close()
+        await self.close_session()
 
     async def login(self) -> bool:
         """Login to Betfair API using certificate-based authentication"""
@@ -53,7 +64,8 @@ class BetfairClient:
                 'password': os.getenv('BETFAIR_PASSWORD')
             }
             
-            ssl_context = aiohttp.ssl.create_default_context()
+            # Create SSL context using standard ssl library
+            ssl_context = ssl.create_default_context()
             ssl_context.load_cert_chain(self.cert_file, self.key_file)
             
             async with self.http_session.post(
@@ -63,13 +75,20 @@ class BetfairClient:
                 ssl=ssl_context
             ) as resp:
                 if resp.status == 200:
-                    resp_json = await resp.json()
-                    if resp_json['loginStatus'] == 'SUCCESS':
-                        self.session_token = resp_json['sessionToken']
-                        self.logger.info('Successfully logged in to Betfair API')
-                        return True
-                    else:
-                        self.logger.error(f'Login failed: {resp_json["loginStatus"]}')
+                    # First get the response as text
+                    resp_text = await resp.text()
+                    try:
+                        # Then parse it as JSON
+                        resp_json = json.loads(resp_text)
+                        if resp_json.get('loginStatus') == 'SUCCESS':
+                            self.session_token = resp_json['sessionToken']
+                            self.logger.info('Successfully logged in to Betfair API')
+                            return True
+                        else:
+                            self.logger.error(f'Login failed: {resp_json.get("loginStatus")}')
+                            return False
+                    except json.JSONDecodeError as e:
+                        self.logger.error(f'Failed to parse login response: {resp_text}')
                         return False
                 else:
                     self.logger.error(f'Login request failed with status code: {resp.status}')
