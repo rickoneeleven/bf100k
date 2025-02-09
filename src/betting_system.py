@@ -28,6 +28,7 @@ class BettingSystem:
         self.bet_repository = bet_repository
         self.account_repository = account_repository
         self.dry_run = dry_run
+        self.loop_count = 0
         
         # Initialize commands
         self.market_analysis = MarketAnalysisCommand(
@@ -61,7 +62,7 @@ class BettingSystem:
     async def scan_markets(self) -> Optional[Dict]:
         """Scan available markets for betting opportunities"""
         self.logger.info(
-            "Scanning markets for betting opportunities (DRY RUN)" 
+            f"Scanning markets for betting opportunities (DRY RUN) - Loop {self.loop_count}" 
             if self.dry_run else
             "Scanning markets for betting opportunities"
         )
@@ -79,6 +80,9 @@ class BettingSystem:
                 self.logger.error("Failed to retrieve market data")
                 return None
             
+            # Get the fifth market ID if available
+            fifth_market_id = markets[4]['marketId'] if len(markets) >= 5 else None
+            
             # Analyze each market
             for market, market_book in zip(markets, market_books):
                 market_id = market['marketId']
@@ -86,7 +90,10 @@ class BettingSystem:
                     market_id=market_id,
                     min_odds=3.0,
                     max_odds=4.0,
-                    liquidity_factor=1.1
+                    liquidity_factor=1.1,
+                    dry_run=self.dry_run,
+                    loop_count=self.loop_count,
+                    fifth_market_id=fifth_market_id
                 )
                 
                 betting_opportunity = await self.market_analysis.execute(request)
@@ -94,12 +101,14 @@ class BettingSystem:
                     if self.dry_run:
                         self.logger.info(
                             f"[DRY RUN] Would place bet: Market {betting_opportunity['market_id']}, "
-                            f"Selection {betting_opportunity['selection_id']}, "
+                            f"Selection {betting_opportunity.get('runner_name', 'Unknown')}, "
                             f"Odds {betting_opportunity['odds']}, "
                             f"Stake £{betting_opportunity['stake']}"
                         )
                     return betting_opportunity
-            
+
+            # Increment loop count if no opportunity found
+            self.loop_count += 1
             return None
             
         except Exception as e:
@@ -109,9 +118,10 @@ class BettingSystem:
     async def place_bet(self, betting_opportunity: Dict) -> Optional[Dict]:
         """Place a bet based on identified opportunity"""
         if self.dry_run:
+            dry_run_msg = "[DRY RUN FALLBACK]" if betting_opportunity.get('dry_run_fallback') else "[DRY RUN]"
             self.logger.info(
-                f"[DRY RUN] Would place bet: Market {betting_opportunity['market_id']}, "
-                f"Selection {betting_opportunity['selection_id']}, "
+                f"{dry_run_msg} Would place bet: Market {betting_opportunity['market_id']}, "
+                f"Selection {betting_opportunity.get('runner_name', 'Unknown')}, "
                 f"Odds {betting_opportunity['odds']}, "
                 f"Stake £{betting_opportunity['stake']}"
             )

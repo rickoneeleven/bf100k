@@ -21,6 +21,9 @@ class MarketAnalysisRequest:
     min_odds: float = 3.0
     max_odds: float = 4.0
     liquidity_factor: float = 1.1
+    dry_run: bool = True
+    loop_count: int = 0
+    fifth_market_id: str = None  # ID of the 5th market in the list
 
 class MarketAnalysisCommand:
     def __init__(
@@ -60,6 +63,13 @@ class MarketAnalysisCommand:
             
         return True, "Market meets criteria"
 
+    def _find_draw_selection(self, runners: List[Dict]) -> Optional[Dict]:
+        """Find the Draw selection in the runners list"""
+        for runner in runners:
+            if runner.get('runnerName', '').lower() == 'the draw':
+                return runner
+        return None
+
     async def analyze_market(self, market_data: Dict, request: MarketAnalysisRequest) -> Optional[Dict]:
         """
         Analyze market for potential betting opportunities asynchronously
@@ -80,8 +90,47 @@ class MarketAnalysisCommand:
         # Get current balance for stake calculation
         account_status = await self.account_repository.get_account_status()
         current_balance = account_status.current_balance
-        
-        # Analyze each runner (selection) in the market
+
+        # Special handling for dry run fallback - only on 5th market after 2 loops
+        is_fifth_market = request.market_id == request.fifth_market_id
+        if request.dry_run and request.loop_count >= 2 and is_fifth_market:
+            self.logger.info("Dry run fallback: Selecting The Draw (ID: 58805) on 5th market")
+            # Find runner with selection ID 58805 (The Draw)
+            for runner in market_data.get('runners', []):
+                if runner.get('selectionId') == 58805:
+                    ex = runner.get('ex', {})
+                    available_to_back = ex.get('availableToBack', [])
+                    
+                    if available_to_back:
+                        return {
+                            "market_id": market_data.get('marketId'),
+                            "selection_id": 58805,
+                            "runner_name": "The Draw",
+                            "odds": available_to_back[0].get('price'),
+                            "stake": current_balance,
+                            "available_volume": available_to_back[0].get('size'),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "dry_run_fallback": True
+                        }
+            self.logger.warning("Could not find The Draw selection in fifth market")
+            
+            if draw_selection:
+                ex = draw_selection.get('ex', {})
+                available_to_back = ex.get('availableToBack', [])
+                
+                if available_to_back:
+                    return {
+                        "market_id": market_data.get('marketId'),
+                        "selection_id": draw_selection.get('selectionId'),
+                        "runner_name": draw_selection.get('runnerName', 'The Draw'),
+                        "odds": available_to_back[0].get('price'),
+                        "stake": current_balance,
+                        "available_volume": available_to_back[0].get('size'),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "dry_run_fallback": True
+                    }
+            
+        # Normal market analysis
         for runner in market_data.get('runners', []):
             ex = runner.get('ex', {})
             available_to_back = ex.get('availableToBack', [])
@@ -102,7 +151,6 @@ class MarketAnalysisCommand:
             )
             
             if meets_criteria:
-                # Log the runner name for debugging
                 self.logger.info(f"Found opportunity for runner: {runner.get('runnerName', 'Unknown')}")
                 
                 return {

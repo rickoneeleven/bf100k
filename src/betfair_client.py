@@ -230,7 +230,6 @@ class BetfairClient:
                         
                         # Map runner names if market_runners provided
                         if market_runners:
-                            self.logger.info(f"Runner mapping data: {market_runners}")
                             for market_book in market_books:
                                 market_id = market_book['marketId']
                                 if market_id in market_runners:
