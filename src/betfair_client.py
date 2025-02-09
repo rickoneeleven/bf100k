@@ -158,8 +158,12 @@ class BetfairClient:
                 if resp.status == 200:
                     resp_json = await resp.json()
                     if 'result' in resp_json:
+                        result = resp_json['result']
+                        # Log the first market's runners to debug
+                        if result and len(result) > 0:
+                            self.logger.info(f"First market runners: {result[0].get('runners', [])}")
                         self.logger.info('Successfully retrieved football markets')
-                        return resp_json['result']
+                        return result
                     else:
                         self.logger.error(f'Error in response: {resp_json.get("error")}')
                         return None
@@ -226,6 +230,7 @@ class BetfairClient:
                         
                         # Map runner names if market_runners provided
                         if market_runners:
+                            self.logger.info(f"Runner mapping data: {market_runners}")
                             for market_book in market_books:
                                 market_id = market_book['marketId']
                                 if market_id in market_runners:
@@ -233,6 +238,7 @@ class BetfairClient:
                                         runner['selectionId']: runner['runnerName']
                                         for runner in market_runners[market_id]
                                     }
+                                    self.logger.info(f"Created runner map for market {market_id}: {runner_map}")
                                     
                                     # Add runner names to market book data
                                     for runner in market_book.get('runners', []):
@@ -264,7 +270,7 @@ class BetfairClient:
         if not markets:
             return None, None
             
-        # Create runner mapping
+        # Create runner mapping from market catalog data
         market_runners = {
             market['marketId']: market.get('runners', [])
             for market in markets
