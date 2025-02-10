@@ -173,7 +173,7 @@ class MarketAnalysisCommand:
             # Log market start time
             market_start_time = market.get('marketStartTime', '')
             if formatted_time := self._format_market_time(market_start_time):
-                self.logger.info(f"\n{formatted_time}")
+                self.logger.info(f"\n                                                                  Kick off: {formatted_time}")
 
             # Process runners
             runners = market_book.get('runners', [])

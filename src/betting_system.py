@@ -93,7 +93,6 @@ class BettingSystem:
                     if self.dry_run:
                         self.logger.info(
                             f"[DRY RUN] Would place bet:\n"
-                            f"Match: {betting_opportunity['event_name']}\n"
                             f"Market ID: {betting_opportunity['market_id']}\n"
                             f"Selection: {betting_opportunity['team_name']}\n"
                             f"Selection ID: {betting_opportunity['selection_id']}\n"

@@ -32,7 +32,6 @@ async def run_betting_cycle(betting_system: BettingSystem):
                     f"[DRY RUN] Found betting opportunity:\n"
                     f"Market ID: {opportunity['market_id']}\n"
                     f"Selection ID: {opportunity['selection_id']}\n"
-                    f"Runner Name: {opportunity.get('runner_name', 'Unknown')}\n"
                     f"Odds: {opportunity['odds']}\n"
                     f"Stake: £{opportunity['stake']}\n"
                     f"Available Volume: £{opportunity.get('available_volume', 'Unknown')}"
