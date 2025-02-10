@@ -2,7 +2,7 @@
 betfair_client.py
 
 Async client for interacting with the Betfair API. Handles authentication,
-session management, and basic market operations.
+session management, and basic market operations with proper team name mapping.
 """
 
 import os
@@ -133,7 +133,8 @@ class BetfairClient:
                     'marketProjection': [
                         'EVENT',
                         'MARKET_START_TIME',
-                        'RUNNER_DESCRIPTION'
+                        'RUNNER_DESCRIPTION',
+                        'COMPETITION'
                     ],
                     'sort': 'MAXIMUM_TRADED'
                 },
@@ -166,20 +167,30 @@ class BetfairClient:
             self.logger.error(f'Exception during get_football_markets_for_today: {str(e)}')
             return None
 
+    def _create_runner_mapping(self, market: Dict) -> Dict[int, str]:
+        """Create mapping of selection IDs to runner names"""
+        runner_mapping = {}
+        for runner in market.get('runners', []):
+            selection_id = runner.get('selectionId')
+            runner_name = runner.get('runnerName')
+            if selection_id and runner_name:
+                runner_mapping[selection_id] = runner_name
+        return runner_mapping
+
     async def list_market_book(
         self,
         market_ids: List[str],
-        market_runners: Dict[str, List[Dict]] = None
+        market_catalogue: Optional[List[Dict]] = None
     ) -> Optional[List[Dict]]:
         """
         Get detailed market data including prices for specified markets
         
         Args:
             market_ids: List of market IDs to retrieve
-            market_runners: Optional dict mapping market IDs to runner information
+            market_catalogue: Optional market catalogue data for name mapping
         
         Returns:
-            List of market books with mapped team names or None if request fails
+            List of market books with mapped team names
         """
         if not self.session_token:
             self.logger.error('No session token available - please login first')
@@ -187,6 +198,14 @@ class BetfairClient:
             
         try:
             session = await self.ensure_session()
+            
+            # Create runner mappings if catalogue provided
+            runner_mappings = {}
+            if market_catalogue:
+                for market in market_catalogue:
+                    market_id = market.get('marketId')
+                    if market_id:
+                        runner_mappings[market_id] = self._create_runner_mapping(market)
             
             payload = {
                 'jsonrpc': '2.0',
@@ -219,22 +238,14 @@ class BetfairClient:
                     if 'result' in resp_json:
                         market_books = resp_json['result']
                         
-                        # Map team names if market_runners provided
-                        if market_runners:
-                            for market_book in market_books:
-                                market_id = market_book['marketId']
-                                if market_id in market_runners:
-                                    runners = market_runners[market_id]
-                                    selection_to_team = {
-                                        runner['selectionId']: runner.get('runnerName', 'Unknown Team')
-                                        for runner in runners
-                                    }
-                                    
-                                    for runner in market_book.get('runners', []):
-                                        runner['teamName'] = selection_to_team.get(
-                                            runner['selectionId'],
-                                            'Unknown Team'
-                                        )
+                        # Map team names using runner mappings
+                        for market_book in market_books:
+                            market_id = market_book['marketId']
+                            if market_id in runner_mappings:
+                                for runner in market_book.get('runners', []):
+                                    selection_id = runner.get('selectionId')
+                                    if selection_id in runner_mappings[market_id]:
+                                        runner['teamName'] = runner_mappings[market_id][selection_id]
                         
                         return market_books
                     else:
@@ -258,22 +269,21 @@ class BetfairClient:
         if not markets:
             return None, None
             
-        # Create event names mapping
-        event_names = {
-            market['marketId']: market.get('event', {}).get('name', 'Unknown Event')
-            for market in markets
-        }
-        
-        # Get all market IDs in order
+        # Get market IDs
         market_ids = [market['marketId'] for market in markets]
         
-        # Get market books with team names mapped
-        market_books = await self.list_market_book(market_ids)
+        # Get market books with team names mapped from catalogue
+        market_books = await self.list_market_book(market_ids, markets)
         
         # Add event names to market books
         if market_books:
             for book in market_books:
-                book['eventName'] = event_names.get(book['marketId'], 'Unknown Event')
+                # Find corresponding market in catalogue
+                for market in markets:
+                    if market['marketId'] == book['marketId']:
+                        book['eventName'] = market.get('event', {}).get('name', '')
+                        book['competition'] = market.get('competition', {}).get('name', '')
+                        break
         
         if not market_books:
             return None, None

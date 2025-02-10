@@ -65,13 +65,22 @@ class MarketAnalysisCommand:
             
         return True, "meets criteria"
 
-    def _find_draw_selection(self, runners: List[Dict]) -> Optional[Dict]:
-        """Find the Draw selection in the runners list"""
+    def _sort_runners_by_type(self, runners: List[Dict]) -> Tuple[Dict, Dict, Dict]:
+        """Sort runners into home team, away team, and draw"""
+        home_team = None
+        away_team = None
+        draw = None
+        
         for runner in runners:
             team_name = runner.get('teamName', '').lower()
             if team_name in self.DRAW_VARIANTS:
-                return runner
-        return None
+                draw = runner
+            elif not home_team:
+                home_team = runner
+            else:
+                away_team = runner
+                
+        return home_team, draw, away_team
 
     async def execute(
         self, 
@@ -95,31 +104,38 @@ class MarketAnalysisCommand:
             current_balance = account_status.current_balance
 
             # Get start time
-            market_start_time = market_book.get('marketStartTime', 'Unknown')
-            if market_start_time != 'Unknown':
+            market_start_time = market.get('marketStartTime', '')
+            if market_start_time:
                 start_time = datetime.fromisoformat(market_start_time.replace('Z', '+00:00'))
                 formatted_time = start_time.strftime('%Y-%m-%d %H:%M:%S')
-            else:
-                formatted_time = 'Unknown'
+                self.logger.info(f"\n{formatted_time}")
 
-            # Display market odds in cleaner format
+            # Process runners
             runners = market_book.get('runners', [])
-            runner_data = []
+            home_team, draw, away_team = self._sort_runners_by_type(runners)
             
-            # Process and store runner data
+            if home_team and draw and away_team:
+                # Get odds and sizes
+                home_odds = home_team.get('ex', {}).get('availableToBack', [{}])[0].get('price', 'N/A')
+                home_size = home_team.get('ex', {}).get('availableToBack', [{}])[0].get('size', 'N/A')
+                
+                draw_odds = draw.get('ex', {}).get('availableToBack', [{}])[0].get('price', 'N/A')
+                draw_size = draw.get('ex', {}).get('availableToBack', [{}])[0].get('size', 'N/A')
+                
+                away_odds = away_team.get('ex', {}).get('availableToBack', [{}])[0].get('price', 'N/A')
+                away_size = away_team.get('ex', {}).get('availableToBack', [{}])[0].get('size', 'N/A')
+                
+                self.logger.info(
+                    f"{home_team['teamName']} (Win: {home_odds} / Available: £{home_size}) || "
+                    f"Draw: {draw_odds} / Available: £{draw_size} || "
+                    f"{away_team['teamName']} (Win: {away_odds} / Available: £{away_size})\n"
+                )
+
+            # Check betting criteria for each runner
             for runner in runners:
                 ex = runner.get('ex', {})
                 available_to_back = ex.get('availableToBack', [{}])[0]
-                odds = available_to_back.get('price', 'N/A')
-                size = available_to_back.get('size', 'N/A')
                 
-                runner_data.append((
-                    runner.get('teamName', 'Unknown'),
-                    odds,
-                    size
-                ))
-                
-                # Check betting criteria
                 if available_to_back:
                     meets_criteria, _ = self.validate_market_criteria(
                         available_to_back.get('price', 0),
@@ -132,44 +148,32 @@ class MarketAnalysisCommand:
                         return {
                             "market_id": market_book.get('marketId'),
                             "selection_id": runner.get('selectionId'),
-                            "team_name": runner.get('teamName', 'Unknown'),
+                            "team_name": runner.get('teamName', 'Unknown Team'),
                             "event_name": event_name,
                             "odds": available_to_back.get('price'),
                             "stake": current_balance,
                             "available_volume": available_to_back.get('size'),
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
-            
-            # Log market data if we have all three runners
-            if len(runner_data) == 3:  # home, draw, away
-                home, draw, away = runner_data
-                self.logger.info(
-                    f"{formatted_time}\n"
-                    f"{home[0]} (Win: {home[1]} / Available: £{home[2]}) || "
-                    f"Draw: {draw[1]} / Available: £{draw[2]} || "
-                    f"{away[0]} (Win: {away[1]} / Available: £{away[2]})\n"
-                )
 
             # Special handling for dry run fallback
             is_fifth_market = request.market_id == request.fifth_market_id
-            if request.dry_run and request.loop_count >= 2 and is_fifth_market:
-                draw_selection = self._find_draw_selection(runners)
-                if draw_selection:
-                    ex = draw_selection.get('ex', {})
-                    available_to_back = ex.get('availableToBack', [])
-                    
-                    if available_to_back:
-                        return {
-                            "market_id": market_book.get('marketId'),
-                            "selection_id": draw_selection['selectionId'],
-                            "team_name": draw_selection.get('teamName', 'The Draw'),
-                            "event_name": event_name,
-                            "odds": available_to_back[0].get('price'),
-                            "stake": current_balance,
-                            "available_volume": available_to_back[0].get('size'),
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "dry_run_fallback": True
-                        }
+            if request.dry_run and request.loop_count >= 2 and is_fifth_market and draw:
+                ex = draw.get('ex', {})
+                available_to_back = ex.get('availableToBack', [{}])[0]
+                
+                if available_to_back:
+                    return {
+                        "market_id": market_book.get('marketId'),
+                        "selection_id": draw['selectionId'],
+                        "team_name": draw.get('teamName', 'The Draw'),
+                        "event_name": event_name,
+                        "odds": available_to_back.get('price'),
+                        "stake": current_balance,
+                        "available_volume": available_to_back.get('size'),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "dry_run_fallback": True
+                    }
             
             return None
             
