@@ -154,25 +154,7 @@ class BetfairClient:
                 if resp.status == 200:
                     resp_json = await resp.json()
                     if 'result' in resp_json:
-                        markets = resp_json['result']
-                        # Log details about returned markets
-                        if markets:
-                            matches_info = []
-                            for market in markets:
-                                runners = []
-                                event_name = market.get('event', {}).get('name', 'Unknown Event')
-                                for runner in market.get('runners', []):
-                                    runner['teamName'] = runner.get('runnerName', 'Unknown Team')
-                                    runners.append(runner['teamName'])
-                                
-                                team_names = ' vs '.join(
-                                    team for team in runners if team.lower() not in {'the draw', 'draw'}
-                                )
-                                matches_info.append(f"  {event_name} ({team_names})")
-                            
-                            self.logger.info(f"Retrieved {len(markets)} football matches:\n" + 
-                                           "\n".join(matches_info))
-                        return markets
+                        return resp_json['result']
                     else:
                         self.logger.error(f'Error in response: {resp_json.get("error")}')
                         return None
@@ -242,13 +224,14 @@ class BetfairClient:
                             for market_book in market_books:
                                 market_id = market_book['marketId']
                                 if market_id in market_runners:
-                                    team_map = {
-                                        runner['selectionId']: runner['teamName']
-                                        for runner in market_runners[market_id]
+                                    runners = market_runners[market_id]
+                                    selection_to_team = {
+                                        runner['selectionId']: runner.get('runnerName', 'Unknown Team')
+                                        for runner in runners
                                     }
                                     
                                     for runner in market_book.get('runners', []):
-                                        runner['teamName'] = team_map.get(
+                                        runner['teamName'] = selection_to_team.get(
                                             runner['selectionId'],
                                             'Unknown Team'
                                         )
@@ -275,12 +258,6 @@ class BetfairClient:
         if not markets:
             return None, None
             
-        # Create team mapping from market catalog data
-        market_runners = {
-            market['marketId']: market.get('runners', [])
-            for market in markets
-        }
-
         # Create event names mapping
         event_names = {
             market['marketId']: market.get('event', {}).get('name', 'Unknown Event')
@@ -291,28 +268,12 @@ class BetfairClient:
         market_ids = [market['marketId'] for market in markets]
         
         # Get market books with team names mapped
-        market_books = await self.list_market_book(market_ids, market_runners)
+        market_books = await self.list_market_book(market_ids)
         
         # Add event names to market books
         if market_books:
             for book in market_books:
                 book['eventName'] = event_names.get(book['marketId'], 'Unknown Event')
-                # Ensure each runner has teamName set
-                for runner in book.get('runners', []):
-                    if 'teamName' not in runner:
-                        market_id = book['marketId']
-                        runner_id = runner['selectionId']
-                        for market_runner in market_runners.get(market_id, []):
-                            if market_runner['selectionId'] == runner_id:
-                                runner['teamName'] = market_runner['teamName']
-                                break
-                        else:
-                            runner['teamName'] = 'Unknown Team'
-        
-        # Ensure market books are in same order as catalogs
-        if market_books:
-            market_books_dict = {book['marketId']: book for book in market_books}
-            market_books = [market_books_dict[market_id] for market_id in market_ids]
         
         if not market_books:
             return None, None

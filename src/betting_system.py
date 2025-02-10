@@ -47,30 +47,24 @@ class BettingSystem:
             account_repository
         )
         
-        # Setup logging with dry run indicator
+        # Setup logging
         self.logger = logging.getLogger('BettingSystem')
         self.logger.setLevel(logging.INFO)
         handler = logging.FileHandler('web/logs/betting_system.log')
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - [DRY RUN] %(levelname)s - %(message)s' 
-            if dry_run else
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
 
     async def scan_markets(self) -> Optional[Dict]:
         """Scan available markets for betting opportunities"""
-        self.logger.info(
-            f"Scanning matches for betting opportunities (DRY RUN) - Loop {self.loop_count}" 
-            if self.dry_run else
-            "Scanning matches for betting opportunities"
-        )
-        
         try:
             if await self.bet_repository.has_active_bets():
-                self.logger.info("Active bet exists - skipping match scan")
                 return None
+            
+            # Get current balance and calculate required liquidity
+            account_status = await self.account_repository.get_account_status()
+            required_liquidity = account_status.current_balance * 1.1
+            self.logger.info(f"Required Liquidity: £{required_liquidity:.2f}\n")
             
             async with self.betfair_client as client:
                 markets, market_books = await client.get_markets_with_odds()
@@ -103,7 +97,7 @@ class BettingSystem:
                             f"Selection: {betting_opportunity['team_name']}\n"
                             f"Odds: {betting_opportunity['odds']}\n"
                             f"Stake: £{betting_opportunity['stake']}\n"
-                            f"Available Volume: £{betting_opportunity.get('available_volume', 'Unknown')}"
+                            f"Available Volume: £{betting_opportunity['available_volume']}"
                         )
                     return betting_opportunity
 
@@ -118,18 +112,8 @@ class BettingSystem:
     async def place_bet(self, betting_opportunity: Dict) -> Optional[Dict]:
         """Place a bet based on identified opportunity"""
         if self.dry_run:
-            dry_run_msg = "[DRY RUN FALLBACK]" if betting_opportunity.get('dry_run_fallback') else "[DRY RUN]"
-            self.logger.info(
-                f"{dry_run_msg} Would place bet:\n"
-                f"Match: {betting_opportunity['event_name']}\n"
-                f"Selection: {betting_opportunity['team_name']}\n"
-                f"Odds: {betting_opportunity['odds']}\n"
-                f"Stake: £{betting_opportunity['stake']}\n"
-                f"Available Volume: £{betting_opportunity['available_volume']}"
-            )
             return betting_opportunity
             
-        # Original bet placement logic for non-dry run
         try:
             request = PlaceBetRequest(
                 market_id=betting_opportunity['market_id'],
@@ -158,19 +142,14 @@ class BettingSystem:
         Settle an existing bet asynchronously
         Returns updated bet details if successful, None otherwise
         """
-        self.logger.info(f"Attempting to settle bet for market {market_id}")
-        
         try:
-            # Create settlement request
             request = BetSettlementRequest(
                 market_id=market_id,
                 won=won,
                 profit=profit
             )
             
-            # Execute bet settlement
             settled_bet = await self.settle_bet.execute(request)
-            
             if settled_bet:
                 self.logger.info(
                     f"Successfully settled bet:\n"
@@ -179,10 +158,7 @@ class BettingSystem:
                     f"Won: {won}\n"
                     f"Profit: £{profit}"
                 )
-                return settled_bet
-            else:
-                self.logger.error("Bet settlement failed")
-                return None
+            return settled_bet
                 
         except Exception as e:
             self.logger.error(f"Error during bet settlement: {str(e)}")
