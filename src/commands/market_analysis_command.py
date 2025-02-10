@@ -82,6 +82,72 @@ class MarketAnalysisCommand:
                 
         return home_team, draw, away_team
 
+    def _format_market_time(self, market_start_time: str) -> Optional[str]:
+        """Format market start time for logging"""
+        if market_start_time:
+            start_time = datetime.fromisoformat(market_start_time.replace('Z', '+00:00'))
+            return start_time.strftime('%Y-%m-%d %H:%M:%S')
+        return None
+
+    def _log_runner_details(
+        self,
+        market_id: str,
+        home_team: Dict,
+        draw: Dict,
+        away_team: Dict
+    ) -> None:
+        """Log details of all runners in the market"""
+        # Get odds and sizes for home team
+        home_odds = home_team.get('ex', {}).get('availableToBack', [{}])[0].get('price', 'N/A')
+        home_size = home_team.get('ex', {}).get('availableToBack', [{}])[0].get('size', 'N/A')
+        home_id = home_team.get('selectionId', 'N/A')
+        
+        # Get odds and sizes for draw
+        draw_odds = draw.get('ex', {}).get('availableToBack', [{}])[0].get('price', 'N/A')
+        draw_size = draw.get('ex', {}).get('availableToBack', [{}])[0].get('size', 'N/A')
+        draw_id = draw.get('selectionId', 'N/A')
+        
+        # Get odds and sizes for away team
+        away_odds = away_team.get('ex', {}).get('availableToBack', [{}])[0].get('price', 'N/A')
+        away_size = away_team.get('ex', {}).get('availableToBack', [{}])[0].get('size', 'N/A')
+        away_id = away_team.get('selectionId', 'N/A')
+        
+        self.logger.info(
+            f"MarketID: {market_id} || "
+            f"{home_team['teamName']} (Win: {home_odds} / Available: £{home_size} / selectionID: {home_id}) || "
+            f"Draw (Win: {draw_odds} / Available: £{draw_size} / selectionID: {draw_id}) || "
+            f"{away_team['teamName']} (Win: {away_odds} / Available: £{away_size} / selectionID: {away_id})\n"
+        )
+
+    def _create_betting_opportunity(
+        self,
+        market_id: str,
+        runner: Dict,
+        event_name: str,
+        competition_name: str,
+        odds: float,
+        stake: float,
+        available_volume: float,
+        is_dry_run_fallback: bool = False
+    ) -> Dict:
+        """Create a standardized betting opportunity dictionary"""
+        opportunity = {
+            "market_id": market_id,
+            "selection_id": runner.get('selectionId'),
+            "team_name": runner.get('teamName', 'Unknown Team'),
+            "event_name": event_name,
+            "competition": competition_name,
+            "odds": odds,
+            "stake": stake,
+            "available_volume": available_volume,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+        if is_dry_run_fallback:
+            opportunity["dry_run_fallback"] = True
+            
+        return opportunity
+
     async def execute(
         self, 
         request: MarketAnalysisRequest, 
@@ -93,8 +159,10 @@ class MarketAnalysisCommand:
         Returns betting opportunity if found, None otherwise
         """
         try:
-            event_name = market.get('event', {}).get('name', 'Unknown Event')
+            # Extract market details from market catalog
             market_id = market_book.get('marketId', 'Unknown Market ID')
+            event_name = market.get('event', {}).get('name', 'Unknown Event')
+            competition_name = market.get('competition', {}).get('name', 'Unknown Competition')
             
             # Skip if market is in-play or has active bets
             if market_book.get('inplay') or await self.bet_repository.has_active_bets():
@@ -104,37 +172,18 @@ class MarketAnalysisCommand:
             account_status = await self.account_repository.get_account_status()
             current_balance = account_status.current_balance
 
-            # Get start time
+            # Log market start time
             market_start_time = market.get('marketStartTime', '')
-            if market_start_time:
-                start_time = datetime.fromisoformat(market_start_time.replace('Z', '+00:00'))
-                formatted_time = start_time.strftime('%Y-%m-%d %H:%M:%S')
+            if formatted_time := self._format_market_time(market_start_time):
                 self.logger.info(f"\n{formatted_time}")
 
             # Process runners
             runners = market_book.get('runners', [])
             home_team, draw, away_team = self._sort_runners_by_type(runners)
             
+            # Log runner details if all parts are present
             if home_team and draw and away_team:
-                # Get odds and sizes
-                home_odds = home_team.get('ex', {}).get('availableToBack', [{}])[0].get('price', 'N/A')
-                home_size = home_team.get('ex', {}).get('availableToBack', [{}])[0].get('size', 'N/A')
-                home_id = home_team.get('selectionId', 'N/A')
-                
-                draw_odds = draw.get('ex', {}).get('availableToBack', [{}])[0].get('price', 'N/A')
-                draw_size = draw.get('ex', {}).get('availableToBack', [{}])[0].get('size', 'N/A')
-                draw_id = draw.get('selectionId', 'N/A')
-                
-                away_odds = away_team.get('ex', {}).get('availableToBack', [{}])[0].get('price', 'N/A')
-                away_size = away_team.get('ex', {}).get('availableToBack', [{}])[0].get('size', 'N/A')
-                away_id = away_team.get('selectionId', 'N/A')
-                
-                self.logger.info(
-                    f"MarketID: {market_id} || "
-                    f"{home_team['teamName']} (Win: {home_odds} / Available: £{home_size} / selectionID: {home_id}) || "
-                    f"Draw (Win: {draw_odds} / Available: £{draw_size} / selectionID: {draw_id}) || "
-                    f"{away_team['teamName']} (Win: {away_odds} / Available: £{away_size} / selectionID: {away_id})\n"
-                )
+                self._log_runner_details(market_id, home_team, draw, away_team)
 
             # Check betting criteria for each runner
             for runner in runners:
@@ -142,24 +191,26 @@ class MarketAnalysisCommand:
                 available_to_back = ex.get('availableToBack', [{}])[0]
                 
                 if available_to_back:
+                    odds = available_to_back.get('price', 0)
+                    size = available_to_back.get('size', 0)
+                    
                     meets_criteria, _ = self.validate_market_criteria(
-                        available_to_back.get('price', 0),
-                        available_to_back.get('size', 0),
+                        odds,
+                        size,
                         current_balance,
                         request
                     )
                     
                     if meets_criteria:
-                        return {
-                            "market_id": market_book.get('marketId'),
-                            "selection_id": runner.get('selectionId'),
-                            "team_name": runner.get('teamName', 'Unknown Team'),
-                            "event_name": event_name,
-                            "odds": available_to_back.get('price'),
-                            "stake": current_balance,
-                            "available_volume": available_to_back.get('size'),
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
+                        return self._create_betting_opportunity(
+                            market_id=market_id,
+                            runner=runner,
+                            event_name=event_name,
+                            competition_name=competition_name,
+                            odds=odds,
+                            stake=current_balance,
+                            available_volume=size
+                        )
 
             # Special handling for dry run fallback
             is_fifth_market = request.market_id == request.fifth_market_id
@@ -168,17 +219,16 @@ class MarketAnalysisCommand:
                 available_to_back = ex.get('availableToBack', [{}])[0]
                 
                 if available_to_back:
-                    return {
-                        "market_id": market_book.get('marketId'),
-                        "selection_id": draw['selectionId'],
-                        "team_name": draw.get('teamName', 'The Draw'),
-                        "event_name": event_name,
-                        "odds": available_to_back.get('price'),
-                        "stake": current_balance,
-                        "available_volume": available_to_back.get('size'),
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "dry_run_fallback": True
-                    }
+                    return self._create_betting_opportunity(
+                        market_id=market_id,
+                        runner=draw,
+                        event_name=event_name,
+                        competition_name=competition_name,
+                        odds=available_to_back.get('price'),
+                        stake=current_balance,
+                        available_volume=available_to_back.get('size'),
+                        is_dry_run_fallback=True
+                    )
             
             return None
             

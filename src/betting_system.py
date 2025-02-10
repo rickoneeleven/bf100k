@@ -94,7 +94,9 @@ class BettingSystem:
                         self.logger.info(
                             f"[DRY RUN] Would place bet:\n"
                             f"Match: {betting_opportunity['event_name']}\n"
+                            f"Market ID: {betting_opportunity['market_id']}\n"
                             f"Selection: {betting_opportunity['team_name']}\n"
+                            f"Selection ID: {betting_opportunity['selection_id']}\n"
                             f"Odds: {betting_opportunity['odds']}\n"
                             f"Stake: £{betting_opportunity['stake']}\n"
                             f"Available Volume: £{betting_opportunity['available_volume']}"
