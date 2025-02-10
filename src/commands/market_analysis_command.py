@@ -94,6 +94,7 @@ class MarketAnalysisCommand:
         """
         try:
             event_name = market.get('event', {}).get('name', 'Unknown Event')
+            market_id = market_book.get('marketId', 'Unknown Market ID')
             
             # Skip if market is in-play or has active bets
             if market_book.get('inplay') or await self.bet_repository.has_active_bets():
@@ -118,17 +119,21 @@ class MarketAnalysisCommand:
                 # Get odds and sizes
                 home_odds = home_team.get('ex', {}).get('availableToBack', [{}])[0].get('price', 'N/A')
                 home_size = home_team.get('ex', {}).get('availableToBack', [{}])[0].get('size', 'N/A')
+                home_id = home_team.get('selectionId', 'N/A')
                 
                 draw_odds = draw.get('ex', {}).get('availableToBack', [{}])[0].get('price', 'N/A')
                 draw_size = draw.get('ex', {}).get('availableToBack', [{}])[0].get('size', 'N/A')
+                draw_id = draw.get('selectionId', 'N/A')
                 
                 away_odds = away_team.get('ex', {}).get('availableToBack', [{}])[0].get('price', 'N/A')
                 away_size = away_team.get('ex', {}).get('availableToBack', [{}])[0].get('size', 'N/A')
+                away_id = away_team.get('selectionId', 'N/A')
                 
                 self.logger.info(
-                    f"{home_team['teamName']} (Win: {home_odds} / Available: £{home_size}) || "
-                    f"Draw: {draw_odds} / Available: £{draw_size} || "
-                    f"{away_team['teamName']} (Win: {away_odds} / Available: £{away_size})\n"
+                    f"MarketID: {market_id} || "
+                    f"{home_team['teamName']} (Win: {home_odds} / Available: £{home_size} / selectionID: {home_id}) || "
+                    f"Draw (Win: {draw_odds} / Available: £{draw_size} / selectionID: {draw_id}) || "
+                    f"{away_team['teamName']} (Win: {away_odds} / Available: £{away_size} / selectionID: {away_id})\n"
                 )
 
             # Check betting criteria for each runner
