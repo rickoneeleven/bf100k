@@ -19,6 +19,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+*.lock
 
 # Virtual Environment
 venv/
@@ -43,11 +44,6 @@ env.*
 .vscode/
 *.swp
 *.swo
-
-# Testing
-.coverage
-htmlcov/
-.pytest_cache/
 
 # macOS
 .DS_Store

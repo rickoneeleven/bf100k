@@ -13,6 +13,7 @@ import logging
 from ..repositories.bet_repository import BetRepository
 from ..repositories.account_repository import AccountRepository
 from ..betfair_client import BetfairClient
+from ..selection_mapper import SelectionMapper
 
 @dataclass
 class MarketAnalysisRequest:
@@ -38,6 +39,7 @@ class MarketAnalysisCommand:
         self.betfair_client = betfair_client
         self.bet_repository = bet_repository
         self.account_repository = account_repository
+        self.selection_mapper = SelectionMapper()
         
         self.logger = logging.getLogger('MarketAnalysisCommand')
         self.logger.setLevel(logging.INFO)
@@ -65,15 +67,38 @@ class MarketAnalysisCommand:
             
         return True, "meets criteria"
 
-    def _sort_runners_by_type(self, runners: List[Dict]) -> Tuple[Dict, Dict, Dict]:
-        """Sort runners into home team, away team, and draw"""
+    async def _get_or_create_team_mapping(self, selection_id: str, team_name: str) -> str:
+        """Get team name from mapper or create new mapping"""
+        try:
+            # Try to get existing mapping
+            mapped_name = await self.selection_mapper.get_team_name(str(selection_id))
+            if mapped_name:
+                return mapped_name
+                
+            # Create new mapping if none exists
+            await self.selection_mapper.add_mapping(str(selection_id), team_name)
+            return team_name
+            
+        except Exception as e:
+            self.logger.error(f"Error managing team mapping: {str(e)}")
+            return team_name  # Fall back to original name on error
+
+    async def _sort_runners_by_type(self, runners: List[Dict]) -> Tuple[Dict, Dict, Dict]:
+        """Sort runners into home team, away team, and draw with consistent naming"""
         home_team = None
         away_team = None
         draw = None
         
         for runner in runners:
-            team_name = runner.get('teamName', '').lower()
-            if team_name in self.DRAW_VARIANTS:
+            # Get selection ID and original team name
+            selection_id = str(runner.get('selectionId', ''))
+            original_name = runner.get('teamName', '').lower()
+            
+            # Get or create mapping
+            mapped_name = await self._get_or_create_team_mapping(selection_id, original_name)
+            runner['teamName'] = mapped_name  # Update with mapped name
+            
+            if mapped_name.lower() in self.DRAW_VARIANTS:
                 draw = runner
             elif not home_team:
                 home_team = runner
@@ -89,7 +114,7 @@ class MarketAnalysisCommand:
             return start_time.strftime('%Y-%m-%d %H:%M:%S')
         return None
 
-    def _log_runner_details(
+    async def _log_runner_details(
         self,
         market_id: str,
         event_name: str,
@@ -102,6 +127,7 @@ class MarketAnalysisCommand:
         home_odds = home_team.get('ex', {}).get('availableToBack', [{}])[0].get('price', 'N/A')
         home_size = home_team.get('ex', {}).get('availableToBack', [{}])[0].get('size', 'N/A')
         home_id = home_team.get('selectionId', 'N/A')
+        home_name = await self._get_or_create_team_mapping(str(home_id), home_team.get('teamName', 'Unknown'))
         
         # Get odds and sizes for draw
         draw_odds = draw.get('ex', {}).get('availableToBack', [{}])[0].get('price', 'N/A')
@@ -112,15 +138,16 @@ class MarketAnalysisCommand:
         away_odds = away_team.get('ex', {}).get('availableToBack', [{}])[0].get('price', 'N/A')
         away_size = away_team.get('ex', {}).get('availableToBack', [{}])[0].get('size', 'N/A')
         away_id = away_team.get('selectionId', 'N/A')
+        away_name = await self._get_or_create_team_mapping(str(away_id), away_team.get('teamName', 'Unknown'))
         
         self.logger.info(
             f"MarketID: {market_id} Event: {event_name} || "
-            f"{home_team['teamName']} (Win: {home_odds} / Available: £{home_size} / selectionID: {home_id}) || "
+            f"{home_name} (Win: {home_odds} / Available: £{home_size} / selectionID: {home_id}) || "
             f"Draw (Win: {draw_odds} / Available: £{draw_size} / selectionID: {draw_id}) || "
-            f"{away_team['teamName']} (Win: {away_odds} / Available: £{away_size} / selectionID: {away_id})\n"
+            f"{away_name} (Win: {away_odds} / Available: £{away_size} / selectionID: {away_id})\n"
         )
 
-    def _create_betting_opportunity(
+    async def _create_betting_opportunity(
         self,
         market_id: str,
         market: Dict,
@@ -131,10 +158,17 @@ class MarketAnalysisCommand:
         is_dry_run_fallback: bool = False
     ) -> Dict:
         """Create a standardized betting opportunity dictionary"""
+        # Get mapped team name
+        selection_id = str(runner.get('selectionId'))
+        team_name = await self._get_or_create_team_mapping(
+            selection_id,
+            runner.get('teamName', 'Unknown Team')
+        )
+        
         opportunity = {
             "market_id": market_id,
             "selection_id": runner.get('selectionId'),
-            "team_name": runner.get('teamName', 'Unknown Team'),
+            "team_name": team_name,
             "event_name": market.get('event', {}).get('name', 'Unknown Event'),
             "competition": market.get('competition', {}).get('name', 'Unknown Competition'),
             "odds": odds,
@@ -175,14 +209,14 @@ class MarketAnalysisCommand:
             if formatted_time := self._format_market_time(market_start_time):
                 self.logger.info(f"\n                                                                  Kick off: {formatted_time}")
 
-            # Process runners
+            # Process runners with consistent naming
             runners = market_book.get('runners', [])
-            home_team, draw, away_team = self._sort_runners_by_type(runners)
+            home_team, draw, away_team = await self._sort_runners_by_type(runners)
             
             # Log runner details if all parts are present
             if home_team and draw and away_team:
                 event_name = market.get('event', {}).get('name', 'Unknown Event')
-                self._log_runner_details(market_id, event_name, home_team, draw, away_team)
+                await self._log_runner_details(market_id, event_name, home_team, draw, away_team)
 
             # Check betting criteria for each runner
             for runner in runners:
@@ -201,7 +235,7 @@ class MarketAnalysisCommand:
                     )
                     
                     if meets_criteria:
-                        return self._create_betting_opportunity(
+                        return await self._create_betting_opportunity(
                             market_id=market_id,
                             market=market,
                             runner=runner,
@@ -217,7 +251,7 @@ class MarketAnalysisCommand:
                 available_to_back = ex.get('availableToBack', [{}])[0]
                 
                 if available_to_back:
-                    return self._create_betting_opportunity(
+                    return await self._create_betting_opportunity(
                         market_id=market_id,
                         market=market,
                         runner=draw,

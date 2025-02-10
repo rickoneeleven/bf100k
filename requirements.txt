@@ -13,3 +13,6 @@ aiofiles>=0.8.0
 aiohttp[speedups]>=3.8.0
 cryptography>=42.0.0
 pyOpenSSL>=24.0.0
+
+# File operations
+filelock>=3.13.1
