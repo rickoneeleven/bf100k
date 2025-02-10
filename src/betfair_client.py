@@ -1,8 +1,5 @@
 """
-betfair_client.py
-
-Async client for interacting with the Betfair API. Handles authentication,
-session management, and basic market operations with proper team name mapping.
+betfair_client.py - Fixed login method handling text/plain response
 """
 
 import os
@@ -35,39 +32,29 @@ class BetfairClient:
         self.cert_login_url = 'https://identitysso-cert.betfair.com/api/certlogin'
         self.betting_url = 'https://api.betfair.com/exchange/betting/json-rpc/v1'
 
-    @property
-    def http_session(self) -> Optional[aiohttp.ClientSession]:
-        """Get the current HTTP session"""
-        return self._http_session
-
     async def ensure_session(self) -> aiohttp.ClientSession:
         """Ensure a valid HTTP session exists and return it"""
-        async with self._session_lock:
-            if self._http_session is None or self._http_session.closed:
-                self._http_session = aiohttp.ClientSession()
-            return self._http_session
+        if self._http_session is None or self._http_session.closed:
+            self._http_session = aiohttp.ClientSession()
+        return self._http_session
 
     async def close_session(self) -> None:
         """Close the HTTP session if it exists"""
-        async with self._session_lock:
-            if self._http_session and not self._http_session.closed:
-                await self._http_session.close()
-                self._http_session = None
+        if self._http_session and not self._http_session.closed:
+            await self._http_session.close()
+            self._http_session = None
 
     async def __aenter__(self):
-        """Async context manager entry"""
         await self.ensure_session()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit"""
         await self.close_session()
 
     async def login(self) -> bool:
         """Login to Betfair API using certificate-based authentication"""
         try:
             session = await self.ensure_session()
-            
             payload = {
                 'username': os.getenv('BETFAIR_USERNAME'),
                 'password': os.getenv('BETFAIR_PASSWORD')
@@ -83,9 +70,12 @@ class BetfairClient:
                 ssl=ssl_context
             ) as resp:
                 if resp.status == 200:
-                    resp_text = await resp.text()
                     try:
+                        # First get the text response
+                        resp_text = await resp.text()
+                        # Then parse it as JSON
                         resp_json = json.loads(resp_text)
+                        
                         if resp_json.get('loginStatus') == 'SUCCESS':
                             self.session_token = resp_json['sessionToken']
                             self.logger.info('Successfully logged in to Betfair')
@@ -147,11 +137,7 @@ class BetfairClient:
                 'content-type': 'application/json'
             }
             
-            async with session.post(
-                self.betting_url,
-                json=payload,
-                headers=headers
-            ) as resp:
+            async with session.post(self.betting_url, json=payload, headers=headers) as resp:
                 if resp.status == 200:
                     resp_json = await resp.json()
                     if 'result' in resp_json:
@@ -167,30 +153,20 @@ class BetfairClient:
             self.logger.error(f'Exception during get_football_markets_for_today: {str(e)}')
             return None
 
-    def _create_runner_mapping(self, market: Dict) -> Dict[int, str]:
-        """Create mapping of selection IDs to runner names"""
-        runner_mapping = {}
-        for runner in market.get('runners', []):
-            selection_id = runner.get('selectionId')
-            runner_name = runner.get('runnerName')
-            if selection_id and runner_name:
-                runner_mapping[selection_id] = runner_name
-        return runner_mapping
-
     async def list_market_book(
         self,
         market_ids: List[str],
-        market_catalogue: Optional[List[Dict]] = None
+        market_catalogue: List[Dict]
     ) -> Optional[List[Dict]]:
         """
         Get detailed market data including prices for specified markets
         
         Args:
             market_ids: List of market IDs to retrieve
-            market_catalogue: Optional market catalogue data for name mapping
+            market_catalogue: Market catalogue data for mapping
         
         Returns:
-            List of market books with mapped team names
+            List of market books with mapped event data
         """
         if not self.session_token:
             self.logger.error('No session token available - please login first')
@@ -199,13 +175,8 @@ class BetfairClient:
         try:
             session = await self.ensure_session()
             
-            # Create runner mappings if catalogue provided
-            runner_mappings = {}
-            if market_catalogue:
-                for market in market_catalogue:
-                    market_id = market.get('marketId')
-                    if market_id:
-                        runner_mappings[market_id] = self._create_runner_mapping(market)
+            # Create market catalogue lookup
+            catalogue_lookup = {market['marketId']: market for market in market_catalogue}
             
             payload = {
                 'jsonrpc': '2.0',
@@ -228,24 +199,30 @@ class BetfairClient:
                 'content-type': 'application/json'
             }
             
-            async with session.post(
-                self.betting_url,
-                json=payload,
-                headers=headers
-            ) as resp:
+            async with session.post(self.betting_url, json=payload, headers=headers) as resp:
                 if resp.status == 200:
                     resp_json = await resp.json()
                     if 'result' in resp_json:
                         market_books = resp_json['result']
                         
-                        # Map team names using runner mappings
+                        # Add market data from catalogue
                         for market_book in market_books:
                             market_id = market_book['marketId']
-                            if market_id in runner_mappings:
+                            if market_id in catalogue_lookup:
+                                catalogue_data = catalogue_lookup[market_id]
+                                market_book['event'] = catalogue_data.get('event', {})
+                                market_book['competition'] = catalogue_data.get('competition', {})
+                                market_book['marketStartTime'] = catalogue_data.get('marketStartTime')
+                                
+                                # Map runner names
+                                runner_map = {
+                                    r['selectionId']: r['runnerName'] 
+                                    for r in catalogue_data.get('runners', [])
+                                }
                                 for runner in market_book.get('runners', []):
                                     selection_id = runner.get('selectionId')
-                                    if selection_id in runner_mappings[market_id]:
-                                        runner['teamName'] = runner_mappings[market_id][selection_id]
+                                    if selection_id in runner_map:
+                                        runner['teamName'] = runner_map[selection_id]
                         
                         return market_books
                     else:
@@ -272,19 +249,8 @@ class BetfairClient:
         # Get market IDs
         market_ids = [market['marketId'] for market in markets]
         
-        # Get market books with team names mapped from catalogue
+        # Get market books with catalogue data
         market_books = await self.list_market_book(market_ids, markets)
-        
-        # Add event names to market books
-        if market_books:
-            for book in market_books:
-                # Find corresponding market in catalogue
-                for market in markets:
-                    if market['marketId'] == book['marketId']:
-                        book['eventName'] = market.get('event', {}).get('name', '')
-                        book['competition'] = market.get('competition', {}).get('name', '')
-                        break
-        
         if not market_books:
             return None, None
             

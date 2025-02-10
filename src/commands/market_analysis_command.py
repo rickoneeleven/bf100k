@@ -92,6 +92,7 @@ class MarketAnalysisCommand:
     def _log_runner_details(
         self,
         market_id: str,
+        event_name: str,
         home_team: Dict,
         draw: Dict,
         away_team: Dict
@@ -113,7 +114,7 @@ class MarketAnalysisCommand:
         away_id = away_team.get('selectionId', 'N/A')
         
         self.logger.info(
-            f"MarketID: {market_id} || "
+            f"MarketID: {market_id} Event: {event_name} || "
             f"{home_team['teamName']} (Win: {home_odds} / Available: £{home_size} / selectionID: {home_id}) || "
             f"Draw (Win: {draw_odds} / Available: £{draw_size} / selectionID: {draw_id}) || "
             f"{away_team['teamName']} (Win: {away_odds} / Available: £{away_size} / selectionID: {away_id})\n"
@@ -122,9 +123,8 @@ class MarketAnalysisCommand:
     def _create_betting_opportunity(
         self,
         market_id: str,
+        market: Dict,
         runner: Dict,
-        event_name: str,
-        competition_name: str,
         odds: float,
         stake: float,
         available_volume: float,
@@ -135,8 +135,8 @@ class MarketAnalysisCommand:
             "market_id": market_id,
             "selection_id": runner.get('selectionId'),
             "team_name": runner.get('teamName', 'Unknown Team'),
-            "event_name": event_name,
-            "competition": competition_name,
+            "event_name": market.get('event', {}).get('name', 'Unknown Event'),
+            "competition": market.get('competition', {}).get('name', 'Unknown Competition'),
             "odds": odds,
             "stake": stake,
             "available_volume": available_volume,
@@ -159,10 +159,8 @@ class MarketAnalysisCommand:
         Returns betting opportunity if found, None otherwise
         """
         try:
-            # Extract market details from market catalog
+            # Extract market details
             market_id = market_book.get('marketId', 'Unknown Market ID')
-            event_name = market.get('event', {}).get('name', 'Unknown Event')
-            competition_name = market.get('competition', {}).get('name', 'Unknown Competition')
             
             # Skip if market is in-play or has active bets
             if market_book.get('inplay') or await self.bet_repository.has_active_bets():
@@ -183,7 +181,8 @@ class MarketAnalysisCommand:
             
             # Log runner details if all parts are present
             if home_team and draw and away_team:
-                self._log_runner_details(market_id, home_team, draw, away_team)
+                event_name = market.get('event', {}).get('name', 'Unknown Event')
+                self._log_runner_details(market_id, event_name, home_team, draw, away_team)
 
             # Check betting criteria for each runner
             for runner in runners:
@@ -204,9 +203,8 @@ class MarketAnalysisCommand:
                     if meets_criteria:
                         return self._create_betting_opportunity(
                             market_id=market_id,
+                            market=market,
                             runner=runner,
-                            event_name=event_name,
-                            competition_name=competition_name,
                             odds=odds,
                             stake=current_balance,
                             available_volume=size
@@ -221,9 +219,8 @@ class MarketAnalysisCommand:
                 if available_to_back:
                     return self._create_betting_opportunity(
                         market_id=market_id,
+                        market=market,
                         runner=draw,
-                        event_name=event_name,
-                        competition_name=competition_name,
                         odds=available_to_back.get('price'),
                         stake=current_balance,
                         available_volume=available_to_back.get('size'),
