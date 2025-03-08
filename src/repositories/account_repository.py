@@ -45,7 +45,7 @@ class AccountRepository:
         """Initialize storage file if it doesn't exist (sync operation during init)"""
         if not self.account_status_file.exists():
             initial_status = {
-                "current_balance": 0.0,
+                "current_balance": 1.0,  # Changed to £1 starting stake
                 "target_amount": 50000.0,
                 "total_bets_placed": 0,
                 "successful_bets": 0,
@@ -56,14 +56,29 @@ class AccountRepository:
 
     async def _save_json(self, file_path: Path, data: Dict) -> None:
         """Save data to JSON file asynchronously"""
-        async with aiofiles.open(file_path, 'w') as f:
-            await f.write(json.dumps(data, indent=2))
+        try:
+            async with aiofiles.open(file_path, 'w') as f:
+                await f.write(json.dumps(data, indent=2))
+        except Exception as e:
+            self.logger.error(f"Error saving JSON: {str(e)}")
+            raise
 
     async def _load_json(self, file_path: Path) -> Dict:
         """Load data from JSON file asynchronously"""
-        async with aiofiles.open(file_path, 'r') as f:
-            content = await f.read()
-            return json.loads(content)
+        try:
+            async with aiofiles.open(file_path, 'r') as f:
+                content = await f.read()
+                return json.loads(content)
+        except Exception as e:
+            self.logger.error(f"Error loading JSON: {str(e)}")
+            # Return default structure if file can't be loaded
+            return {
+                "current_balance": 1.0,
+                "target_amount": 50000.0,
+                "total_bets_placed": 0,
+                "successful_bets": 0,
+                "last_updated": datetime.now(timezone.utc).isoformat()
+            }
 
     async def get_account_status(self) -> AccountStatus:
         """
@@ -72,8 +87,19 @@ class AccountRepository:
         Returns:
             AccountStatus object containing current account information
         """
-        data = await self._load_json(self.account_status_file)
-        return AccountStatus(**data)
+        try:
+            data = await self._load_json(self.account_status_file)
+            return AccountStatus(**data)
+        except Exception as e:
+            self.logger.error(f"Error getting account status: {str(e)}")
+            # Return default status if error occurs
+            return AccountStatus(
+                current_balance=1.0,
+                target_amount=50000.0,
+                total_bets_placed=0,
+                successful_bets=0,
+                last_updated=datetime.now(timezone.utc).isoformat()
+            )
 
     async def update_balance(self, amount_change: float) -> None:
         """
@@ -85,19 +111,38 @@ class AccountRepository:
         Raises:
             ValueError: If resulting balance would be negative
         """
-        self.logger.info(f"Updating balance by {amount_change}")
-        
-        data = await self._load_json(self.account_status_file)
-        new_balance = data["current_balance"] + amount_change
-        
-        if new_balance < 0:
-            raise ValueError(f"Insufficient funds: {data['current_balance']} + {amount_change} = {new_balance}")
-        
-        data["current_balance"] = new_balance
-        data["last_updated"] = datetime.now(timezone.utc).isoformat()
-        
-        await self._save_json(self.account_status_file, data)
-        self.logger.info(f"New balance: £{new_balance}")
+        try:
+            self.logger.info(f"Updating balance by {amount_change}")
+            
+            data = await self._load_json(self.account_status_file)
+            new_balance = data["current_balance"] + amount_change
+            
+            if new_balance < 0:
+                raise ValueError(f"Insufficient funds: {data['current_balance']} + {amount_change} = {new_balance}")
+            
+            data["current_balance"] = new_balance
+            data["last_updated"] = datetime.now(timezone.utc).isoformat()
+            
+            await self._save_json(self.account_status_file, data)
+            self.logger.info(f"New balance: £{new_balance}")
+        except Exception as e:
+            self.logger.error(f"Error updating balance: {str(e)}")
+            raise
+
+    async def reset_to_starting_stake(self) -> None:
+        """Reset account balance to the starting stake (£1)"""
+        try:
+            self.logger.info("Resetting account balance to starting stake (£1)")
+            
+            data = await self._load_json(self.account_status_file)
+            data["current_balance"] = 1.0  # £1 starting stake
+            data["last_updated"] = datetime.now(timezone.utc).isoformat()
+            
+            await self._save_json(self.account_status_file, data)
+            self.logger.info("Account balance reset to £1")
+        except Exception as e:
+            self.logger.error(f"Error resetting to starting stake: {str(e)}")
+            raise
 
     async def update_bet_stats(self, bet_won: bool) -> None:
         """
@@ -106,20 +151,24 @@ class AccountRepository:
         Args:
             bet_won: Whether the bet was successful
         """
-        self.logger.info(f"Updating bet statistics - Won: {bet_won}")
-        
-        data = await self._load_json(self.account_status_file)
-        data["total_bets_placed"] += 1
-        if bet_won:
-            data["successful_bets"] += 1
-        data["last_updated"] = datetime.now(timezone.utc).isoformat()
-        
-        await self._save_json(self.account_status_file, data)
-        
-        self.logger.info(
-            f"Updated stats: Total bets: {data['total_bets_placed']}, "
-            f"Successful: {data['successful_bets']}"
-        )
+        try:
+            self.logger.info(f"Updating bet statistics - Won: {bet_won}")
+            
+            data = await self._load_json(self.account_status_file)
+            data["total_bets_placed"] += 1
+            if bet_won:
+                data["successful_bets"] += 1
+            data["last_updated"] = datetime.now(timezone.utc).isoformat()
+            
+            await self._save_json(self.account_status_file, data)
+            
+            self.logger.info(
+                f"Updated stats: Total bets: {data['total_bets_placed']}, "
+                f"Successful: {data['successful_bets']}"
+            )
+        except Exception as e:
+            self.logger.error(f"Error updating bet stats: {str(e)}")
+            raise
 
     async def check_target_reached(self) -> bool:
         """
@@ -128,10 +177,14 @@ class AccountRepository:
         Returns:
             bool: True if current balance >= target amount, False otherwise
         """
-        status = await self.get_account_status()
-        return status.current_balance >= status.target_amount
+        try:
+            status = await self.get_account_status()
+            return status.current_balance >= status.target_amount
+        except Exception as e:
+            self.logger.error(f"Error checking target: {str(e)}")
+            return False
 
-    async def reset_account_stats(self, initial_balance: float = 0.0) -> None:
+    async def reset_account_stats(self, initial_balance: float = 1.0) -> None:
         """
         Reset account statistics to initial state asynchronously
         
@@ -141,21 +194,25 @@ class AccountRepository:
         Raises:
             ValueError: If initial_balance is negative
         """
-        if initial_balance < 0:
-            raise ValueError(f"Initial balance cannot be negative: {initial_balance}")
+        try:
+            if initial_balance < 0:
+                raise ValueError(f"Initial balance cannot be negative: {initial_balance}")
+                
+            self.logger.info(f"Resetting account statistics with initial balance: £{initial_balance}")
             
-        self.logger.info(f"Resetting account statistics with initial balance: £{initial_balance}")
-        
-        initial_status = {
-            "current_balance": initial_balance,
-            "target_amount": 50000.0,
-            "total_bets_placed": 0,
-            "successful_bets": 0,
-            "last_updated": datetime.now(timezone.utc).isoformat()
-        }
-        
-        await self._save_json(self.account_status_file, initial_status)
-        self.logger.info("Account statistics reset successfully")
+            initial_status = {
+                "current_balance": initial_balance,
+                "target_amount": 50000.0,
+                "total_bets_placed": 0,
+                "successful_bets": 0,
+                "last_updated": datetime.now(timezone.utc).isoformat()
+            }
+            
+            await self._save_json(self.account_status_file, initial_status)
+            self.logger.info("Account statistics reset successfully")
+        except Exception as e:
+            self.logger.error(f"Error resetting account stats: {str(e)}")
+            raise
 
     async def update_target_amount(self, new_target: float) -> None:
         """
@@ -167,17 +224,21 @@ class AccountRepository:
         Raises:
             ValueError: If new_target is not positive
         """
-        if new_target <= 0:
-            raise ValueError(f"Target amount must be positive: {new_target}")
+        try:
+            if new_target <= 0:
+                raise ValueError(f"Target amount must be positive: {new_target}")
+                
+            self.logger.info(f"Updating target amount to: £{new_target}")
             
-        self.logger.info(f"Updating target amount to: £{new_target}")
-        
-        data = await self._load_json(self.account_status_file)
-        data["target_amount"] = new_target
-        data["last_updated"] = datetime.now(timezone.utc).isoformat()
-        
-        await self._save_json(self.account_status_file, data)
-        self.logger.info("Target amount updated successfully")
+            data = await self._load_json(self.account_status_file)
+            data["target_amount"] = new_target
+            data["last_updated"] = datetime.now(timezone.utc).isoformat()
+            
+            await self._save_json(self.account_status_file, data)
+            self.logger.info("Target amount updated successfully")
+        except Exception as e:
+            self.logger.error(f"Error updating target amount: {str(e)}")
+            raise
 
     async def get_profit_loss(self) -> float:
         """
@@ -186,8 +247,12 @@ class AccountRepository:
         Returns:
             float: Current balance minus initial balance
         """
-        status = await self.get_account_status()
-        return status.current_balance - 0.0  # Assuming initial balance was 0.0
+        try:
+            status = await self.get_account_status()
+            return status.current_balance - 1.0  # Assuming initial balance was £1
+        except Exception as e:
+            self.logger.error(f"Error getting profit/loss: {str(e)}")
+            return 0.0
 
     async def get_win_rate(self) -> float:
         """
@@ -196,7 +261,11 @@ class AccountRepository:
         Returns:
             float: Win rate percentage (0-100)
         """
-        status = await self.get_account_status()
-        if status.total_bets_placed == 0:
+        try:
+            status = await self.get_account_status()
+            if status.total_bets_placed == 0:
+                return 0.0
+            return (status.successful_bets / status.total_bets_placed) * 100.0
+        except Exception as e:
+            self.logger.error(f"Error calculating win rate: {str(e)}")
             return 0.0
-        return (status.successful_bets / status.total_bets_placed) * 100.0

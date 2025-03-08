@@ -23,6 +23,11 @@ class BetfairClient:
         # Setup logging
         self.logger = logging.getLogger('BetfairClient')
         self.logger.setLevel(logging.INFO)
+        
+        # Ensure log directory exists
+        log_dir = os.path.dirname('web/logs/betfair_client.log')
+        os.makedirs(log_dir, exist_ok=True)
+        
         handler = logging.FileHandler('web/logs/betfair_client.log')
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         handler.setFormatter(formatter)
@@ -31,16 +36,26 @@ class BetfairClient:
         # API endpoints
         self.cert_login_url = 'https://identitysso-cert.betfair.com/api/certlogin'
         self.betting_url = 'https://api.betfair.com/exchange/betting/json-rpc/v1'
+        
+        # Check if files exist
+        if not os.path.exists(self.cert_file):
+            print(f"WARNING: Certificate file does not exist: {self.cert_file}")
+            self.logger.error(f"Certificate file does not exist: {self.cert_file}")
+        if not os.path.exists(self.key_file):
+            print(f"WARNING: Key file does not exist: {self.key_file}")
+            self.logger.error(f"Key file does not exist: {self.key_file}")
 
     async def ensure_session(self) -> aiohttp.ClientSession:
         """Ensure a valid HTTP session exists and return it"""
         if self._http_session is None or self._http_session.closed:
+            print("Creating new aiohttp ClientSession")
             self._http_session = aiohttp.ClientSession()
         return self._http_session
 
     async def close_session(self) -> None:
         """Close the HTTP session if it exists"""
         if self._http_session and not self._http_session.closed:
+            print("Closing aiohttp ClientSession")
             await self._http_session.close()
             self._http_session = None
 
@@ -54,44 +69,96 @@ class BetfairClient:
     async def login(self) -> bool:
         """Login to Betfair API using certificate-based authentication"""
         try:
+            print("Attempting to login to Betfair...")
             session = await self.ensure_session()
+            
+            # Get credentials from environment
+            username = os.getenv('BETFAIR_USERNAME')
+            password = os.getenv('BETFAIR_PASSWORD')
+            
+            print(f"Username: {username[:3]}{'*' * (len(username) - 3) if username else 'None'}")
+            print(f"Password: {'*' * (len(password)) if password else 'None'}")
+            print(f"App Key: {self.app_key[:3]}{'*' * (len(self.app_key) - 3) if self.app_key else 'None'}")
+            print(f"Cert File: {self.cert_file}")
+            print(f"Key File: {self.key_file}")
+            
+            if not username or not password:
+                print("ERROR: Missing Betfair credentials in environment variables")
+                self.logger.error("Missing Betfair credentials in environment variables")
+                return False
+                
+            if not self.app_key:
+                print("ERROR: Missing Betfair app key")
+                self.logger.error("Missing Betfair app key")
+                return False
+                
             payload = {
-                'username': os.getenv('BETFAIR_USERNAME'),
-                'password': os.getenv('BETFAIR_PASSWORD')
+                'username': username,
+                'password': password
             }
             
-            ssl_context = ssl.create_default_context()
-            ssl_context.load_cert_chain(self.cert_file, self.key_file)
+            print("Creating SSL context...")
+            try:
+                ssl_context = ssl.create_default_context()
+                ssl_context.load_cert_chain(self.cert_file, self.key_file)
+                print("SSL context created successfully")
+            except Exception as ssl_error:
+                print(f"ERROR creating SSL context: {str(ssl_error)}")
+                self.logger.error(f"SSL context creation failed: {str(ssl_error)}")
+                return False
             
-            async with session.post(
-                self.cert_login_url,
-                data=payload,
-                headers={'X-Application': self.app_key},
-                ssl=ssl_context
-            ) as resp:
-                if resp.status == 200:
-                    try:
-                        # First get the text response
-                        resp_text = await resp.text()
-                        # Then parse it as JSON
-                        resp_json = json.loads(resp_text)
-                        
-                        if resp_json.get('loginStatus') == 'SUCCESS':
-                            self.session_token = resp_json['sessionToken']
-                            self.logger.info('Successfully logged in to Betfair')
-                            return True
-                        else:
-                            self.logger.error(f'Login failed: {resp_json.get("loginStatus")}')
+            print(f"Sending login request to {self.cert_login_url}...")
+            try:
+                async with session.post(
+                    self.cert_login_url,
+                    data=payload,
+                    headers={'X-Application': self.app_key},
+                    ssl=ssl_context
+                ) as resp:
+                    print(f"Received response with status code: {resp.status}")
+                    
+                    if resp.status == 200:
+                        try:
+                            # First get the text response
+                            resp_text = await resp.text()
+                            print(f"Response text: {resp_text[:100]}...")
+                            
+                            # Then parse it as JSON
+                            resp_json = json.loads(resp_text)
+                            
+                            if resp_json.get('loginStatus') == 'SUCCESS':
+                                self.session_token = resp_json['sessionToken']
+                                print("Login SUCCESS - session token obtained")
+                                self.logger.info('Successfully logged in to Betfair')
+                                return True
+                            else:
+                                print(f"Login FAILED with status: {resp_json.get('loginStatus')}")
+                                if 'error' in resp_json:
+                                    print(f"Error details: {resp_json['error']}")
+                                self.logger.error(f"Login failed: {resp_json.get('loginStatus')}")
+                                return False
+                        except json.JSONDecodeError as e:
+                            print(f"Failed to parse login response: {resp_text}")
+                            self.logger.error(f"Failed to parse login response: {resp_text}")
                             return False
-                    except json.JSONDecodeError as e:
-                        self.logger.error(f'Failed to parse login response: {resp_text}')
+                    else:
+                        print(f"Login request failed with status code: {resp.status}")
+                        try:
+                            err_text = await resp.text()
+                            print(f"Error response: {err_text[:200]}")
+                        except:
+                            print("Could not read error response")
+                        
+                        self.logger.error(f"Login request failed with status code: {resp.status}")
                         return False
-                else:
-                    self.logger.error(f'Login request failed with status code: {resp.status}')
-                    return False
+            except Exception as req_error:
+                print(f"ERROR during login request: {str(req_error)}")
+                self.logger.error(f"Exception during login request: {str(req_error)}")
+                return False
                     
         except Exception as e:
-            self.logger.error(f'Exception during login: {str(e)}')
+            print(f"EXCEPTION during login: {str(e)}")
+            self.logger.error(f"Exception during login: {str(e)}")
             return False
 
     async def get_football_markets_for_today(self) -> Optional[List[Dict]]:
