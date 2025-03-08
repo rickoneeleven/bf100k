@@ -381,11 +381,14 @@ class BettingSystem:
         try:
             self.logger.info(f"Resetting entire betting system with initial stake: £{initial_stake}")
             
-            # Reset account to starting stake
-            await self.account_repository.reset_to_starting_stake(initial_stake)
+            # Reset account stats (instead of just the balance)
+            await self.account_repository.reset_account_stats(initial_stake)
             
             # Reset the betting ledger
             await self.betting_ledger.reset_ledger(initial_stake)
+            
+            # Add this method to clear bet history (see below)
+            await self.bet_repository.reset_bet_history()
             
             # Clear any active bets
             active_bets = await self.bet_repository.get_active_bets()

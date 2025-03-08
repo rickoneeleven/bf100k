@@ -141,3 +141,26 @@ class BetRepository:
             f"Successfully recorded bet settlement: "
             f"Won: {won}, Profit: £{profit}"
         )
+        
+        
+    async def reset_bet_history(self) -> None:
+        """Reset all bet history"""
+        try:
+            self.logger.info("Resetting bet history")
+            
+            # Reset active bets
+            await self._save_json(self.active_bets_file, {
+                "bets": [],
+                "last_updated": datetime.now(timezone.utc).isoformat()
+            })
+            
+            # Reset settled bets
+            await self._save_json(self.settled_bets_file, {
+                "bets": [],
+                "last_updated": datetime.now(timezone.utc).isoformat()
+            })
+            
+            self.logger.info("Bet history reset complete")
+        except Exception as e:
+            self.logger.error(f"Error resetting bet history: {str(e)}")
+            raise
