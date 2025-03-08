@@ -1,9 +1,10 @@
 """
-settle_bet_command_improved.py
+settle_bet_command.py
 
 Improved Command pattern implementation for bet settlement operations.
 Uses real Betfair API results instead of simulation.
 Handles validation, execution, and recording of bet settlements.
+Enhanced with consistent selection ID handling.
 """
 
 from dataclasses import dataclass
@@ -78,7 +79,7 @@ class BetSettlementCommand:
 
     async def check_bet_result(self, bet_details: Dict) -> Tuple[bool, float, str]:
         """
-        Check the result of a bet using Betfair API
+        Check the result of a bet using Betfair API with enhanced selection handling
         
         Args:
             bet_details: Bet details including market_id and selection_id
@@ -91,6 +92,13 @@ class BetSettlementCommand:
             selection_id = bet_details["selection_id"]
             stake = bet_details["stake"]
             odds = bet_details["odds"]
+            team_name = bet_details.get("team_name", "Unknown")
+            
+            self.logger.info(
+                f"Checking result for bet: Market {market_id}, "
+                f"Selection {selection_id} ({team_name}), "
+                f"Stake: £{stake}, Odds: {odds}"
+            )
             
             # Get result from Betfair
             won, status_message = await self.betfair_client.get_market_result(
@@ -129,6 +137,8 @@ class BetSettlementCommand:
                 
             # Get bet details
             bet_details = await self.bet_repository.get_bet_by_market_id(request.market_id)
+            selection_id = bet_details.get("selection_id")
+            team_name = bet_details.get("team_name", "Unknown")
             
             # Get result (either forced or from Betfair)
             if request.forced_settlement:
@@ -137,14 +147,15 @@ class BetSettlementCommand:
                 profit = request.force_profit
                 status = "Forced settlement"
                 self.logger.info(
-                    f"Using forced settlement result: "
-                    f"Won: {won}, Profit: £{profit}"
+                    f"Using forced settlement result: Won: {won}, Profit: £{profit} "
+                    f"for selection {selection_id} ({team_name})"
                 )
             else:
                 # Get actual result from Betfair
                 won, profit, status = await self.check_bet_result(bet_details)
                 self.logger.info(
-                    f"Got result from Betfair: Won: {won}, Profit: £{profit}, Status: {status}"
+                    f"Got result from Betfair: Won: {won}, Profit: £{profit}, Status: {status} "
+                    f"for selection {selection_id} ({team_name})"
                 )
             
             # Record settlement
@@ -166,7 +177,7 @@ class BetSettlementCommand:
                 
                 self.logger.info(
                     f"Successfully settled bet: Market ID {request.market_id}, "
-                    f"Team: {bet_details.get('team_name', 'Unknown')}, "
+                    f"Selection: {selection_id} ({team_name}), "
                     f"Won: {won}, Profit: £{profit}"
                 )
                 
@@ -207,6 +218,12 @@ class BetSettlementCommand:
             for bet in active_bets:
                 market_id = bet["market_id"]
                 selection_id = bet["selection_id"]
+                team_name = bet["team_name"]
+                
+                self.logger.info(
+                    f"Checking settlement status for market {market_id}, "
+                    f"Selection {selection_id} ({team_name})"
+                )
                 
                 # Check if market is settled
                 market_status = await self.betfair_client.check_market_status(market_id)
@@ -225,9 +242,10 @@ class BetSettlementCommand:
                     if settled_bet:
                         settled_bets.append(settled_bet)
                 else:
+                    status_msg = market_status.get('status') if market_status else 'Unknown'
                     self.logger.info(
                         f"Market {market_id} is not yet settled. "
-                        f"Current status: {market_status.get('status') if market_status else 'Unknown'}"
+                        f"Current status: {status_msg}"
                     )
             
             return settled_bets
@@ -323,6 +341,7 @@ class BetSettlementCommand:
                     # Bet has been active for too long, likely an issue
                     self.logger.warning(
                         f"Bet on market {bet['market_id']} has timed out. "
+                        f"Selection: {bet['selection_id']} ({bet.get('team_name', 'Unknown')}), "
                         f"Placed at {bet_time.isoformat()}, which is over {timeout_hours} hours ago"
                     )
                     

@@ -3,7 +3,7 @@ place_bet_command.py
 
 Implements async Command pattern for bet placement operations.
 Handles validation, execution, and recording of bet placement.
-Updated for context-aware mapping system.
+Enhanced with improved selection ID to team name mapping for consistency.
 """
 
 from dataclasses import dataclass
@@ -54,6 +54,10 @@ class PlaceBetCommand:
         try:
             self.logger.info(f"Validating bet placement request for market {request.market_id}")
             
+            # Verify selection ID is valid
+            if not request.selection_id:
+                return False, "Missing selection ID"
+                
             # Check for active bets
             if await self.bet_repository.has_active_bets():
                 return False, "Cannot place bet while another bet is active"
@@ -69,6 +73,7 @@ class PlaceBetCommand:
                 
             # Validate market liquidity
             try:
+                # Get fresh market data to ensure accurate odds
                 market_books = await self.betfair_client.list_market_book([request.market_id])
                 if not market_books:
                     return False, "Failed to retrieve market data"
@@ -79,9 +84,11 @@ class PlaceBetCommand:
                 if market.get('inplay'):
                     return False, "Cannot place bet on in-play market"
                     
-                # Find runner and check liquidity
+                # Find runner and check liquidity by selection ID
+                found_selection = False
                 for runner in market.get('runners', []):
                     if runner.get('selectionId') == request.selection_id:
+                        found_selection = True
                         available_to_back = runner.get('ex', {}).get('availableToBack', [])
                         if not available_to_back:
                             return False, "No prices available for selection"
@@ -89,8 +96,9 @@ class PlaceBetCommand:
                         best_price = available_to_back[0].get('price')
                         available_size = available_to_back[0].get('size')
                         
-                        if best_price != request.odds:
-                            return False, f"Odds have changed: {best_price} != {request.odds}"
+                        # Check if odds have moved
+                        if abs(best_price - request.odds) > 0.01:
+                            return False, f"Odds have changed from {request.odds} to {best_price}"
                             
                         if available_size < request.stake * 1.1:
                             return False, f"Insufficient liquidity: {available_size} < {request.stake * 1.1}"
@@ -100,15 +108,36 @@ class PlaceBetCommand:
                             request.event_id, 
                             str(request.selection_id)
                         )
+                        
                         if not team_name:
-                            self.logger.warning(
-                                f"No team mapping found for selection {request.selection_id} "
-                                f"in event {request.event_name}"
+                            # Try to derive team name from event name
+                            runners = market.get('runners', [])
+                            runners = await self.selection_mapper.derive_teams_from_event(
+                                request.event_id,
+                                request.event_name,
+                                runners
                             )
                             
-                        return True, ""
+                            # Try getting team name again after deriving
+                            team_name = await self.selection_mapper.get_team_name(
+                                request.event_id, 
+                                str(request.selection_id)
+                            )
+                            
+                            if not team_name:
+                                self.logger.warning(
+                                    f"No team mapping could be created for selection {request.selection_id} "
+                                    f"in event {request.event_name}"
+                                )
                         
-                return False, "Selection not found in market"
+                        self.logger.info(
+                            f"Validated selection {request.selection_id} ({team_name}) "
+                            f"with odds {best_price} and liquidity {available_size}"
+                        )
+                        return True, ""
+                
+                if not found_selection:
+                    return False, f"Selection {request.selection_id} not found in market {request.market_id}"
                 
             except Exception as e:
                 self.logger.error(f"Error validating market: {str(e)}")
@@ -120,11 +149,11 @@ class PlaceBetCommand:
 
     async def execute(self, request: PlaceBetRequest) -> Optional[Dict]:
         """
-        Execute bet placement asynchronously
+        Execute bet placement asynchronously with enhanced selection handling
         Returns bet details if successful, None if failed
         """
         try:
-            self.logger.info(f"Executing bet placement for market {request.market_id}")
+            self.logger.info(f"Executing bet placement for market {request.market_id}, selection {request.selection_id}")
             
             # Validate request
             is_valid, error = await self.validate(request)
@@ -138,35 +167,63 @@ class PlaceBetCommand:
             if market_books and market_books[0]:
                 market_start_time = market_books[0].get('marketStartTime')
             
-            # Get team name for the selection
+            # Get team name for the selection from the mapper
             team_name = await self.selection_mapper.get_team_name(
                 request.event_id,
                 str(request.selection_id)
             )
+            
             if not team_name:
                 # Create/update the mapping if not found
-                await self.selection_mapper.add_mapping(
-                    request.event_id,
-                    request.event_name,
-                    str(request.selection_id),
-                    "Unknown Team"  # Will be derived from event name
-                )
-                # Try to get it again after adding
-                team_name = await self.selection_mapper.get_team_name(
-                    request.event_id,
-                    str(request.selection_id)
-                ) or "Unknown Team"
+                # First try to get team mappings from a fresh market lookup
+                if market_books and market_books[0]:
+                    runners = market_books[0].get('runners', [])
+                    runners = await self.selection_mapper.derive_teams_from_event(
+                        request.event_id,
+                        request.event_name,
+                        runners
+                    )
+                    
+                    # Try again after deriving teams
+                    team_name = await self.selection_mapper.get_team_name(
+                        request.event_id,
+                        str(request.selection_id)
+                    )
                 
-            # Create bet record
+                # If still not found, add a generic mapping
+                if not team_name:
+                    await self.selection_mapper.add_mapping(
+                        request.event_id,
+                        request.event_name,
+                        str(request.selection_id),
+                        "Unknown Team"  # Will be derived from event name
+                    )
+                    
+                    # Try to get it again after adding
+                    team_name = await self.selection_mapper.get_team_name(
+                        request.event_id,
+                        str(request.selection_id)
+                    ) or "Unknown Team"
+            
+            # Find sort priority for the selection (for consistent ordering)
+            sort_priority = 999
+            if market_books and market_books[0]:
+                for runner in market_books[0].get('runners', []):
+                    if runner.get('selectionId') == request.selection_id:
+                        sort_priority = runner.get('sortPriority', 999)
+                        break
+                
+            # Create bet record with enhanced details
             bet_details = {
                 "market_id": request.market_id,
-                "event_id": request.event_id,  # Include event_id
-                "event_name": request.event_name,  # Include event_name
+                "event_id": request.event_id,
+                "event_name": request.event_name,
                 "selection_id": request.selection_id,
-                "team_name": team_name,  # Include mapped team name
+                "team_name": team_name,
+                "sort_priority": sort_priority,
                 "odds": request.odds,
                 "stake": request.stake,
-                "market_start_time": market_start_time,  # Add market start time
+                "market_start_time": market_start_time,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
@@ -176,7 +233,8 @@ class PlaceBetCommand:
             
             self.logger.info(
                 f"Successfully placed bet: Market ID {request.market_id}, "
-                f"Selection: {team_name}, Stake £{request.stake}, Odds: {request.odds}"
+                f"Selection: {team_name} (ID: {request.selection_id}, Priority: {sort_priority}), "
+                f"Stake £{request.stake}, Odds: {request.odds}"
             )
             
             return bet_details

@@ -3,6 +3,7 @@ selection_mapper.py
 
 Handles persistent mapping between Betfair selection IDs and team names.
 Implements thread-safe file operations with context-aware mappings and special handling for the Draw.
+Ensures consistent selection ID to team name mapping across the application.
 """
 
 import json
@@ -278,7 +279,7 @@ class SelectionMapper:
 
     async def derive_teams_from_event(self, event_id: str, event_name: str, runners: List[Dict]) -> List[Dict]:
         """
-        Derive team mappings from event name and runners data
+        Derive team mappings from event name and runners data with improved consistency
         
         Args:
             event_id: Betfair event ID
@@ -286,14 +287,19 @@ class SelectionMapper:
             runners: List of runner dictionaries from Betfair
             
         Returns:
-            Updated runners list with proper team names
+            Updated runners list with proper team names and consistent mapping
         """
         try:
-            # First, log all runners to help with debugging
+            # First, ensure runners are sorted by sortPriority for consistent processing
+            runners = sorted(runners, key=lambda r: r.get('sortPriority', 999))
+            
+            # Log all runners to help with debugging
             self.logger.info(f"Processing event: '{event_name}' (ID: {event_id})")
             for runner in runners:
                 self.logger.debug(
-                    f"Runner: ID {runner.get('selectionId')}, Name: '{runner.get('teamName', 'Unknown')}'"
+                    f"Runner: ID {runner.get('selectionId')}, "
+                    f"Name: '{runner.get('teamName', runner.get('runnerName', 'Unknown'))}', "
+                    f"Priority: {runner.get('sortPriority', 'Unknown')}"
                 )
             
             # Extract home and away teams from event name
@@ -312,7 +318,7 @@ class SelectionMapper:
             
             for runner in runners:
                 selection_id = str(runner.get('selectionId', ''))
-                original_name = runner.get('teamName', '')
+                original_name = runner.get('teamName', runner.get('runnerName', 'Unknown'))
                 
                 # Special handling for the known Draw selection ID
                 if selection_id == self.KNOWN_DRAW_SELECTION_ID or original_name.lower() in self.DRAW_VARIANTS:
@@ -322,32 +328,69 @@ class SelectionMapper:
                 else:
                     team_runners.append(runner)
             
-            # Map team runners to home and away
+            # Mark runners based on selection ID / sort priority to handle inconsistent ordering
             if len(team_runners) >= 2:
-                # First runner is home team
+                # Sort team runners by sortPriority for consistent processing
+                team_runners = sorted(team_runners, key=lambda r: r.get('sortPriority', 999))
+                
+                # First priority (lowest number) is home team
                 home_runner = team_runners[0]
-                home_runner['teamName'] = home_team
+                home_selection_id = str(home_runner.get('selectionId', ''))
+                
+                # Check if we already have a mapping for this selection ID
+                existing_team_name = await self.get_team_name(event_id, home_selection_id)
+                
+                # If mapping exists and differs from home_team, log the difference
+                if existing_team_name and existing_team_name != home_team:
+                    self.logger.warning(
+                        f"Existing mapping '{existing_team_name}' differs from home team '{home_team}' "
+                        f"for selection {home_selection_id}"
+                    )
+                    
+                    # Use the event name parsing result for consistency
+                    home_runner['teamName'] = home_team
+                else:
+                    home_runner['teamName'] = home_team
+                    
+                # Add or update the mapping
                 await self.add_mapping(
                     event_id, 
                     event_name, 
-                    str(home_runner.get('selectionId', '')),
+                    home_selection_id,
                     home_team
                 )
                 
-                # Second runner is away team
+                # Second priority is away team
                 away_runner = team_runners[1]
-                away_runner['teamName'] = away_team
+                away_selection_id = str(away_runner.get('selectionId', ''))
+                
+                # Check if we already have a mapping for this selection ID
+                existing_team_name = await self.get_team_name(event_id, away_selection_id)
+                
+                # If mapping exists and differs from away_team, log the difference
+                if existing_team_name and existing_team_name != away_team:
+                    self.logger.warning(
+                        f"Existing mapping '{existing_team_name}' differs from away team '{away_team}' "
+                        f"for selection {away_selection_id}"
+                    )
+                    
+                    # Use the event name parsing result for consistency
+                    away_runner['teamName'] = away_team
+                else:
+                    away_runner['teamName'] = away_team
+                    
+                # Add or update the mapping
                 await self.add_mapping(
                     event_id,
                     event_name,
-                    str(away_runner.get('selectionId', '')),
+                    away_selection_id,
                     away_team
                 )
                 
                 self.logger.info(
                     f"Mapped teams for event '{event_name}': "
-                    f"Home={home_team} (ID: {home_runner.get('selectionId')}), "
-                    f"Away={away_team} (ID: {away_runner.get('selectionId')})"
+                    f"Home={home_team} (ID: {home_selection_id}, Priority: {home_runner.get('sortPriority')}), "
+                    f"Away={away_team} (ID: {away_selection_id}, Priority: {away_runner.get('sortPriority')})"
                 )
             else:
                 self.logger.warning(

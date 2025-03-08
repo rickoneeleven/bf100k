@@ -1,10 +1,11 @@
 """
-betting_system_improved.py
+betting_system.py
 
 Improved betting system that coordinates betting operations using the command pattern.
 Handles async coordination between client, repositories, and commands.
 Updates include:
 - Real result integration instead of simulation
+- Fixed odds mapping between initial market discovery and active bet display
 - Improved selection diversity with continuous market checking
 - Configurable parameters
 - More robust error handling and logging
@@ -123,7 +124,7 @@ class BettingSystem:
 
     async def place_bet_order(self, betting_opportunity: Dict) -> Optional[Dict]:
         """
-        Place a bet based on identified opportunity
+        Place a bet based on identified opportunity with enhanced selection mapping
         
         Args:
             betting_opportunity: Dict containing betting opportunity details
@@ -132,7 +133,7 @@ class BettingSystem:
             Dict containing bet details if successful, None otherwise
         """
         try:
-            # Ensure we have all required fields
+            # Ensure we have all required fields with proper selection IDs
             if 'event_id' not in betting_opportunity:
                 self.logger.warning("Missing event_id in betting opportunity. Using market_id as fallback.")
                 betting_opportunity['event_id'] = betting_opportunity['market_id']
@@ -141,9 +142,41 @@ class BettingSystem:
                 self.logger.warning("Missing event_name in betting opportunity. Using placeholder.")
                 betting_opportunity['event_name'] = "Unknown Event"
             
+            # Ensure selection ID is correctly formatted
+            selection_id = betting_opportunity.get('selection_id')
+            if selection_id is not None:
+                # Ensure selection_id is an integer
+                betting_opportunity['selection_id'] = int(selection_id)
+            
+            # Get proper team name before placement
+            event_id = betting_opportunity['event_id']
+            selection_id_str = str(betting_opportunity['selection_id'])
+            team_name = betting_opportunity.get('team_name')
+            
+            # Double-check team name mapping before placement
+            mapped_team_name = await self.market_analysis.selection_mapper.get_team_name(
+                event_id, 
+                selection_id_str
+            )
+            
+            if mapped_team_name and mapped_team_name != team_name:
+                self.logger.info(
+                    f"Team name from mapping '{mapped_team_name}' differs from opportunity '{team_name}'. "
+                    f"Using mapped name for consistency."
+                )
+                betting_opportunity['team_name'] = mapped_team_name
+            
             # Ensure market_start_time is included if available
             if 'market_start_time' not in betting_opportunity and 'marketStartTime' in betting_opportunity:
                 betting_opportunity['market_start_time'] = betting_opportunity['marketStartTime']
+                
+            # Log the complete betting opportunity for debugging
+            self.logger.info(
+                f"Placing bet on: Event '{betting_opportunity['event_name']}', "
+                f"Selection ID: {betting_opportunity['selection_id']}, "
+                f"Team: '{betting_opportunity['team_name']}', "
+                f"Odds: {betting_opportunity['odds']}"
+            )
                 
             # Record in ledger before placing bet
             await self.betting_ledger.record_bet_placed(betting_opportunity)
@@ -163,7 +196,7 @@ class BettingSystem:
                 
                 return betting_opportunity
                 
-            # Place real bet
+            # Place real bet with proper selection ID
             request = PlaceBetRequest(
                 market_id=betting_opportunity['market_id'],
                 event_id=betting_opportunity['event_id'],
@@ -179,6 +212,7 @@ class BettingSystem:
                     f"Successfully placed bet:\n"
                     f"Match: {betting_opportunity['event_name']}\n"
                     f"Selection: {betting_opportunity['team_name']}\n"
+                    f"Selection ID: {betting_opportunity['selection_id']}\n"
                     f"Stake: £{request.stake}\n"
                     f"Odds: {request.odds}"
                 )
@@ -412,10 +446,10 @@ class BettingSystem:
             raise
             
             
-
     async def get_active_bet_details(self) -> List[Dict]:
         """
         Get detailed information about all active bets including current market odds
+        with enhanced selection mapping
         
         Returns:
             List of enhanced bet details with current market information
@@ -432,20 +466,70 @@ class BettingSystem:
             # Enhance each bet with current market information
             for bet in active_bets:
                 market_id = bet.get("market_id")
+                selection_id = bet.get("selection_id")
+                
+                self.logger.info(
+                    f"Getting enhanced details for bet - "
+                    f"Market: {market_id}, Selection: {selection_id}, "
+                    f"Team: {bet.get('team_name', 'Unknown')}"
+                )
                 
                 # Get current market status
                 market_info = await self.betfair_client.check_market_status(market_id)
                 
                 if market_info:
+                    # Log the market info structure to help debug
+                    self.logger.debug(
+                        f"Market info retrieved - "
+                        f"Status: {market_info.get('status')}, "
+                        f"Inplay: {market_info.get('inplay')}, "
+                        f"Runners count: {len(market_info.get('runners', []))}"
+                    )
+                    
                     # Merge bet data with market data
                     enhanced_bet = {**bet, "current_market": market_info}
+                    
+                    # Find our selection in the current market data and update if needed
+                    runners = market_info.get('runners', [])
+                    for runner in runners:
+                        current_selection_id = runner.get('selectionId')
+                        
+                        # Match by selection ID (not by order/name)
+                        if current_selection_id == selection_id:
+                            # Update team name if it's different or missing
+                            current_team_name = runner.get('runnerName') or runner.get('teamName')
+                            original_team_name = bet.get('team_name')
+                            
+                            if current_team_name and current_team_name != original_team_name:
+                                self.logger.info(
+                                    f"Team name changed for selection {selection_id}: "
+                                    f"'{original_team_name}' -> '{current_team_name}'"
+                                )
+                                enhanced_bet['team_name'] = current_team_name
+                                
+                            # Log current odds vs. original odds
+                            back_prices = runner.get('ex', {}).get('availableToBack', [])
+                            if back_prices:
+                                current_odds = back_prices[0].get('price', 0.0)
+                                original_odds = bet.get('odds', 0.0)
+                                
+                                if abs(current_odds - original_odds) > 0.1:
+                                    self.logger.info(
+                                        f"Odds changed for selection {selection_id}: "
+                                        f"{original_odds} -> {current_odds}"
+                                    )
+                    
                     enhanced_bets.append(enhanced_bet)
                 else:
                     # Include original bet if can't get current market status
+                    self.logger.warning(f"Could not retrieve market status for {market_id}")
                     enhanced_bets.append(bet)
-                    
-            return enhanced_bets
+                        
+                # Log the enhanced bet structure
+                self.logger.debug(f"Enhanced bet created with updated market data")
             
+            return enhanced_bets
+                
         except Exception as e:
             self.logger.error(f"Error getting active bet details: {str(e)}")
             self.logger.exception(e)

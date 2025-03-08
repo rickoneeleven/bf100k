@@ -1,10 +1,11 @@
 """
-betfair_client_enhanced.py
+betfair_client.py
 
 Enhanced Betfair API client with additional capabilities:
 - Real result checking through Betfair API
-- Improved market discovery
+- Improved market discovery with consistent selection mapping
 - More robust connection handling
+- Fixed odds mapping between initial market discovery and active bet display
 """
 
 import os
@@ -240,20 +241,15 @@ class BetfairClient:
             self.logger.error(f'Exception during get_football_markets: {str(e)}')
             return None
 
-    async def list_market_book(
-        self,
-        market_ids: List[str],
-        market_catalogue: List[Dict]
-    ) -> Optional[List[Dict]]:
+    async def _get_market_catalogue_for_ids(self, market_ids: List[str]) -> Optional[List[Dict]]:
         """
-        Get detailed market data including prices for specified markets
+        Get market catalogue data for specific market IDs
         
         Args:
-            market_ids: List of market IDs to retrieve
-            market_catalogue: Market catalogue data for mapping
-        
+            market_ids: List of market IDs to retrieve catalogue data for
+            
         Returns:
-            List of market books with mapped event data
+            List of market catalogue data or None if error
         """
         if not self.session_token:
             self.logger.error('No session token available - please login first')
@@ -262,8 +258,78 @@ class BetfairClient:
         try:
             session = await self.ensure_session()
             
+            payload = {
+                'jsonrpc': '2.0',
+                'method': 'SportsAPING/v1.0/listMarketCatalogue',
+                'params': {
+                    'filter': {
+                        'marketIds': market_ids
+                    },
+                    'maxResults': len(market_ids),
+                    'marketProjection': [
+                        'EVENT',
+                        'COMPETITION',
+                        'MARKET_START_TIME',
+                        'RUNNER_DESCRIPTION',
+                        'MARKET_DESCRIPTION'
+                    ]
+                },
+                'id': 1
+            }
+            
+            headers = {
+                'X-Application': self.app_key,
+                'X-Authentication': self.session_token,
+                'content-type': 'application/json'
+            }
+            
+            async with session.post(self.betting_url, json=payload, headers=headers) as resp:
+                if resp.status == 200:
+                    resp_json = await resp.json()
+                    if 'result' in resp_json:
+                        return resp_json['result']
+                    else:
+                        self.logger.error(f'Error in response: {resp_json.get("error")}')
+                        return None
+                else:
+                    self.logger.error(f'Request failed with status code: {resp.status}')
+                    return None
+                    
+        except Exception as e:
+            self.logger.error(f'Exception during _get_market_catalogue_for_ids: {str(e)}')
+            self.logger.exception(e)
+            return None
+
+    async def list_market_book(
+        self,
+        market_ids: List[str],
+        market_catalogue: List[Dict] = None
+    ) -> Optional[List[Dict]]:
+        """
+        Get detailed market data including prices for specified markets with improved selection mapping
+        
+        Args:
+            market_ids: List of market IDs to retrieve
+            market_catalogue: Market catalogue data for mapping (if None, will fetch fresh data)
+        
+        Returns:
+            List of market books with mapped event data and properly sorted runners
+        """
+        if not self.session_token:
+            self.logger.error('No session token available - please login first')
+            return None
+            
+        try:
+            session = await self.ensure_session()
+            
+            # Get fresh catalogue data if not provided
+            if not market_catalogue:
+                market_catalogue = await self._get_market_catalogue_for_ids(market_ids)
+                if not market_catalogue:
+                    self.logger.warning("Failed to get market catalogue data for mapping")
+            
             # Create market catalogue lookup
-            catalogue_lookup = {market['marketId']: market for market in market_catalogue}
+            catalogue_lookup = {market['marketId']: market for market in market_catalogue} if market_catalogue else {}
             
             payload = {
                 'jsonrpc': '2.0',
@@ -292,24 +358,39 @@ class BetfairClient:
                     if 'result' in resp_json:
                         market_books = resp_json['result']
                         
-                        # Add market data from catalogue
+                        # Add market data from catalogue and map runners consistently
                         for market_book in market_books:
                             market_id = market_book['marketId']
+                            
+                            # Add catalogue data if available
                             if market_id in catalogue_lookup:
                                 catalogue_data = catalogue_lookup[market_id]
                                 market_book['event'] = catalogue_data.get('event', {})
                                 market_book['competition'] = catalogue_data.get('competition', {})
                                 market_book['marketStartTime'] = catalogue_data.get('marketStartTime')
+                                market_book['marketName'] = catalogue_data.get('marketName', 'Unknown Market')
                                 
-                                # Map runner names
+                                # Create consistent runner mapping by selection ID
                                 runner_map = {
-                                    r['selectionId']: r['runnerName'] 
+                                    str(r['selectionId']): {
+                                        'runnerName': r.get('runnerName', 'Unknown'),
+                                        'sortPriority': r.get('sortPriority', 999)
+                                    } 
                                     for r in catalogue_data.get('runners', [])
                                 }
+                                
+                                # Map runner details consistently using selection ID as the key
                                 for runner in market_book.get('runners', []):
-                                    selection_id = runner.get('selectionId')
+                                    selection_id = str(runner.get('selectionId'))
                                     if selection_id in runner_map:
-                                        runner['teamName'] = runner_map[selection_id]
+                                        runner['teamName'] = runner_map[selection_id]['runnerName']
+                                        runner['sortPriority'] = runner_map[selection_id]['sortPriority']
+                                
+                                # Sort runners by sortPriority for consistent ordering
+                                market_book['runners'] = sorted(
+                                    market_book.get('runners', []),
+                                    key=lambda r: r.get('sortPriority', 999)
+                                )
                         
                         return market_books
                     else:
@@ -321,11 +402,12 @@ class BetfairClient:
                     
         except Exception as e:
             self.logger.error(f'Exception during list_market_book: {str(e)}')
+            self.logger.exception(e)
             return None
 
     async def get_markets_with_odds(self, max_results: int = 10) -> Tuple[Optional[List[Dict]], Optional[List[Dict]]]:
         """
-        Get both market catalogue and price data for top football markets
+        Get both market catalogue and price data for top football markets with enhanced mapping
         
         Args:
             max_results: Maximum number of markets to return
@@ -341,16 +423,18 @@ class BetfairClient:
         # Get market IDs
         market_ids = [market['marketId'] for market in markets]
         
-        # Get market books with catalogue data
+        # Get market books with improved catalogue data mapping
         market_books = await self.list_market_book(market_ids, markets)
         if not market_books:
             return None, None
-            
+        
+        self.logger.info(f"Retrieved {len(market_books)} market books with enhanced mapping")
+        
         return markets, market_books
         
     async def check_market_status(self, market_id: str) -> Optional[Dict]:
         """
-        Check current status of a market with enhanced data
+        Check current status of a market with enhanced data and consistent runner mapping
         
         Args:
             market_id: Betfair market ID
@@ -366,39 +450,12 @@ class BetfairClient:
             session = await self.ensure_session()
             
             # Get market catalogue data first for event details and start time
-            catalogue_payload = {
-                'jsonrpc': '2.0',
-                'method': 'SportsAPING/v1.0/listMarketCatalogue',
-                'params': {
-                    'filter': {
-                        'marketIds': [market_id]
-                    },
-                    'maxResults': 1,
-                    'marketProjection': [
-                        'EVENT',
-                        'COMPETITION',
-                        'MARKET_START_TIME',
-                        'RUNNER_DESCRIPTION'
-                    ]
-                },
-                'id': 1
-            }
-            
-            headers = {
-                'X-Application': self.app_key,
-                'X-Authentication': self.session_token,
-                'content-type': 'application/json'
-            }
-            
-            # Get market catalogue data
             catalogue_data = None
-            async with session.post(self.betting_url, json=catalogue_payload, headers=headers) as resp:
-                if resp.status == 200:
-                    resp_json = await resp.json()
-                    if 'result' in resp_json and resp_json['result']:
-                        catalogue_data = resp_json['result'][0]
+            catalogue_data_list = await self._get_market_catalogue_for_ids([market_id])
+            if catalogue_data_list and len(catalogue_data_list) > 0:
+                catalogue_data = catalogue_data_list[0]
             
-            # Now get market book data with prices
+            # Get market book data with prices
             book_payload = {
                 'jsonrpc': '2.0',
                 'method': 'SportsAPING/v1.0/listMarketBook',
@@ -412,6 +469,12 @@ class BetfairClient:
                     }
                 },
                 'id': 1
+            }
+            
+            headers = {
+                'X-Application': self.app_key,
+                'X-Authentication': self.session_token,
+                'content-type': 'application/json'
             }
             
             # Get market price data
@@ -430,17 +493,27 @@ class BetfairClient:
                             market_book['marketName'] = catalogue_data.get('marketName', 'Unknown Market')
                             market_book['marketStartTime'] = catalogue_data.get('marketStartTime')
                             
-                            # Map runner names from catalogue
+                            # Create consistent runner mapping by selection ID
                             runner_map = {
-                                r['selectionId']: r.get('runnerName', 'Unknown') 
+                                str(r['selectionId']): {
+                                    'runnerName': r.get('runnerName', 'Unknown'),
+                                    'sortPriority': r.get('sortPriority', 999)
+                                } 
                                 for r in catalogue_data.get('runners', [])
                             }
                             
-                            # Update runner names
+                            # Update runner details using consistent mapping
                             for runner in market_book.get('runners', []):
-                                selection_id = runner.get('selectionId')
+                                selection_id = str(runner.get('selectionId'))
                                 if selection_id in runner_map:
-                                    runner['runnerName'] = runner_map[selection_id]
+                                    runner['runnerName'] = runner_map[selection_id]['runnerName']
+                                    runner['sortPriority'] = runner_map[selection_id]['sortPriority']
+                            
+                            # Sort runners by sortPriority for consistent ordering
+                            market_book['runners'] = sorted(
+                                market_book.get('runners', []),
+                                key=lambda r: r.get('sortPriority', 999)
+                            )
                         
                         self.logger.info(
                             f"Market {market_id} status: {market_book.get('status')}, "
