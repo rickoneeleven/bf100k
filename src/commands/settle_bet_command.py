@@ -3,6 +3,7 @@ settle_bet_command.py
 
 Implements async Command pattern for bet settlement operations.
 Handles validation, execution, and recording of bet settlements.
+Updated for context-aware mapping system.
 """
 
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ import logging
 from ..repositories.bet_repository import BetRepository
 from ..repositories.account_repository import AccountRepository
 from ..betfair_client import BetfairClient
+from ..selection_mapper import SelectionMapper
 
 @dataclass
 class BetSettlementRequest:
@@ -31,6 +33,7 @@ class BetSettlementCommand:
         self.betfair_client = betfair_client
         self.bet_repository = bet_repository
         self.account_repository = account_repository
+        self.selection_mapper = SelectionMapper()
         
         # Setup logging
         self.logger = logging.getLogger('BetSettlementCommand')
@@ -45,33 +48,37 @@ class BetSettlementCommand:
         Validate bet settlement request asynchronously
         Returns: (is_valid: bool, error_message: str)
         """
-        self.logger.info(f"Validating bet settlement request for market {request.market_id}")
-        
-        # Get the bet details
-        bet = await self.bet_repository.get_bet_by_market_id(request.market_id)
-        if not bet:
-            return False, f"No bet found for market {request.market_id}"
+        try:
+            self.logger.info(f"Validating bet settlement request for market {request.market_id}")
             
-        # Check if bet is already settled
-        if "settlement_time" in bet:
-            return False, f"Bet for market {request.market_id} is already settled"
-            
-        # Validate profit calculation for winning bets
-        if request.won:
-            expected_profit = bet["stake"] * (bet["odds"] - 1)
-            if abs(request.profit - expected_profit) > 0.01:  # Allow for small rounding differences
-                return False, f"Invalid profit amount. Expected: £{expected_profit}, Got: £{request.profit}"
+            # Get the bet details
+            bet = await self.bet_repository.get_bet_by_market_id(request.market_id)
+            if not bet:
+                return False, f"No bet found for market {request.market_id}"
                 
-        return True, ""
+            # Check if bet is already settled
+            if "settlement_time" in bet:
+                return False, f"Bet for market {request.market_id} is already settled"
+                
+            # Validate profit calculation for winning bets
+            if request.won:
+                expected_profit = bet["stake"] * (bet["odds"] - 1)
+                if abs(request.profit - expected_profit) > 0.01:  # Allow for small rounding differences
+                    return False, f"Invalid profit amount. Expected: Â£{expected_profit}, Got: Â£{request.profit}"
+                    
+            return True, ""
+        except Exception as e:
+            self.logger.error(f"Validation error: {str(e)}")
+            return False, f"Validation failed: {str(e)}"
 
     async def execute(self, request: BetSettlementRequest) -> Optional[Dict]:
         """
         Execute bet settlement asynchronously
         Returns updated bet details if successful, None if failed
         """
-        self.logger.info(f"Executing bet settlement for market {request.market_id}")
-        
         try:
+            self.logger.info(f"Executing bet settlement for market {request.market_id}")
+            
             # Validate request
             is_valid, error = await self.validate(request)
             if not is_valid:
@@ -81,8 +88,30 @@ class BetSettlementCommand:
             # Get original bet details
             bet_details = await self.bet_repository.get_bet_by_market_id(request.market_id)
             
+            # Ensure event_id is included in bet details
+            if "event_id" not in bet_details:
+                self.logger.warning(
+                    f"Bet for market {request.market_id} doesn't have event_id. "
+                    f"Using market_id as fallback."
+                )
+                bet_details["event_id"] = bet_details.get("market_id")
+            
             # Start atomic settlement process
             try:
+                # Ensure we have the team name mapped correctly
+                if "selection_id" in bet_details and "event_id" in bet_details:
+                    # Re-verify team mapping for reporting consistency
+                    selection_id = str(bet_details["selection_id"])
+                    event_id = bet_details["event_id"]
+                    event_name = bet_details.get("event_name", "Unknown Event")
+                    
+                    team_name = await self.selection_mapper.get_team_name(event_id, selection_id)
+                    if team_name and team_name != bet_details.get("team_name"):
+                        self.logger.info(
+                            f"Updating team name from '{bet_details.get('team_name')}' to '{team_name}'"
+                        )
+                        bet_details["team_name"] = team_name
+                
                 # Record settlement
                 await self.bet_repository.record_bet_settlement(
                     bet_details=bet_details,
@@ -99,7 +128,8 @@ class BetSettlementCommand:
                 
                 self.logger.info(
                     f"Successfully settled bet: Market ID {request.market_id}, "
-                    f"Won: {request.won}, Profit: £{request.profit}"
+                    f"Team: {bet_details.get('team_name', 'Unknown')}, "
+                    f"Won: {request.won}, Profit: Â£{request.profit}"
                 )
                 
                 # Get and return updated bet details
@@ -109,6 +139,7 @@ class BetSettlementCommand:
                 # If any part of the settlement process fails, we should attempt to
                 # roll back any changes that were made
                 self.logger.error(f"Settlement process failed: {str(settlement_error)}")
+                self.logger.exception(settlement_error)
                 try:
                     # Note: In a full implementation, we would:
                     # 1. Track which operations completed successfully
@@ -122,4 +153,5 @@ class BetSettlementCommand:
                 
         except Exception as e:
             self.logger.error(f"Failed to settle bet: {str(e)}")
+            self.logger.exception(e)
             return None

@@ -3,6 +3,7 @@ betting_system.py
 
 Main system orchestrator that coordinates betting operations using the command pattern.
 Handles async coordination between client, repositories, and commands.
+Updated to support context-aware team mapping.
 """
 
 import logging
@@ -64,7 +65,7 @@ class BettingSystem:
             # Get current balance and calculate required liquidity
             account_status = await self.account_repository.get_account_status()
             required_liquidity = account_status.current_balance * 1.1
-            self.logger.info(f"Required Liquidity: £{required_liquidity:.2f}\n")
+            self.logger.info(f"Required Liquidity: Â£{required_liquidity:.2f}\n")
             
             async with self.betfair_client as client:
                 markets, market_books = await client.get_markets_with_odds()
@@ -97,8 +98,8 @@ class BettingSystem:
                             f"Selection: {betting_opportunity['team_name']}\n"
                             f"Selection ID: {betting_opportunity['selection_id']}\n"
                             f"Odds: {betting_opportunity['odds']}\n"
-                            f"Stake: £{betting_opportunity['stake']}\n"
-                            f"Available Volume: £{betting_opportunity['available_volume']}"
+                            f"Stake: Â£{betting_opportunity['stake']}\n"
+                            f"Available Volume: Â£{betting_opportunity['available_volume']}"
                         )
                     return betting_opportunity
 
@@ -108,6 +109,7 @@ class BettingSystem:
             
         except Exception as e:
             self.logger.error(f"Error in betting cycle: {str(e)}")
+            self.logger.exception(e)
             return None
 
     async def place_bet(self, betting_opportunity: Dict) -> Optional[Dict]:
@@ -116,8 +118,19 @@ class BettingSystem:
             return betting_opportunity
             
         try:
+            # Ensure we have all required fields
+            if 'event_id' not in betting_opportunity:
+                self.logger.warning("Missing event_id in betting opportunity. Using market_id as fallback.")
+                betting_opportunity['event_id'] = betting_opportunity['market_id']
+                
+            if 'event_name' not in betting_opportunity:
+                self.logger.warning("Missing event_name in betting opportunity. Using placeholder.")
+                betting_opportunity['event_name'] = "Unknown Event"
+                
             request = PlaceBetRequest(
                 market_id=betting_opportunity['market_id'],
+                event_id=betting_opportunity['event_id'],
+                event_name=betting_opportunity['event_name'],
                 selection_id=betting_opportunity['selection_id'],
                 odds=betting_opportunity['odds'],
                 stake=betting_opportunity['stake']
@@ -129,13 +142,14 @@ class BettingSystem:
                     f"Successfully placed bet:\n"
                     f"Match: {betting_opportunity['event_name']}\n"
                     f"Selection: {betting_opportunity['team_name']}\n"
-                    f"Stake: £{request.stake}\n"
+                    f"Stake: Â£{request.stake}\n"
                     f"Odds: {request.odds}"
                 )
             return bet_details
                 
         except Exception as e:
             self.logger.error(f"Error during bet placement: {str(e)}")
+            self.logger.exception(e)
             return None
 
     async def settle_bet(self, market_id: str, won: bool, profit: float) -> Optional[Dict]:
@@ -157,12 +171,13 @@ class BettingSystem:
                     f"Match: {settled_bet.get('event_name', 'Unknown Event')}\n"
                     f"Selection: {settled_bet.get('team_name', 'Unknown Team')}\n"
                     f"Won: {won}\n"
-                    f"Profit: £{profit}"
+                    f"Profit: Â£{profit}"
                 )
             return settled_bet
                 
         except Exception as e:
             self.logger.error(f"Error during bet settlement: {str(e)}")
+            self.logger.exception(e)
             return None
 
     async def get_active_bets(self) -> List[Dict]:
