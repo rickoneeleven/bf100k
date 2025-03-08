@@ -3,6 +3,7 @@ main.py
 
 Entry point for the betting system with command-line interface.
 Handles initialization, interactive command processing, and graceful shutdown.
+Enhanced with improved signal handling and cleanup procedures.
 """
 
 import os
@@ -24,8 +25,9 @@ from .betting_ledger import BettingLedger
 from .config_manager import ConfigManager
 from .command_processor import CommandProcessor
 
-# Global variable for graceful shutdown
+# Global variables for shutdown control
 shutdown_event: Optional[asyncio.Event] = None
+shutdown_in_progress: bool = False
 
 async def run_betting_cycle(betting_system: BettingSystem):
     """Execute a single betting cycle"""
@@ -115,88 +117,121 @@ async def display_status(betting_system: BettingSystem):
 
 async def main_loop_with_commands(betting_system: BettingSystem):
     """Main operation loop with command processing and countdown timer"""
-    global shutdown_event
+    global shutdown_event, shutdown_in_progress
     
     # Initialize command processor
     cmd_processor = CommandProcessor(betting_system)
     
     # Start the result poller in the background
-    await betting_system.start_result_poller()
+    result_poller_task = await betting_system.start_result_poller()
     
     # Show available commands
     await cmd_processor.cmd_help()
     
-    while not shutdown_event.is_set() and not cmd_processor.should_exit:
-        try:
-            # First check for results of active bets
-            await check_results(betting_system)
-            
-            # Check if there are active bets
-            has_active_bets = await betting_system.bet_repository.has_active_bets()
-            
-            # Automatically display bet details if there are active bets
-            if has_active_bets:
-                await cmd_processor.cmd_bet_details()
-            
-            # Then scan for betting opportunities if no active bets
-            if not has_active_bets:
-                await run_betting_cycle(betting_system)
-            
-            # Wait with countdown and command processing
-            wait_seconds = 60  # Default wait time
-            
-            print(f"\nWaiting {wait_seconds} seconds before next cycle...")
-            print("Enter commands during this time. Type 'help' for available commands.")
-            
-            # Process commands during wait period
-            for remaining in range(wait_seconds, 0, -1):
-                if shutdown_event.is_set() or cmd_processor.should_exit:
-                    break
+    try:
+        while not shutdown_event.is_set() and not cmd_processor.should_exit:
+            try:
+                # First check for results of active bets
+                await check_results(betting_system)
+                
+                # Check if there are active bets
+                has_active_bets = await betting_system.bet_repository.has_active_bets()
+                
+                # Automatically display bet details if there are active bets
+                if has_active_bets:
+                    await cmd_processor.cmd_bet_details()
+                
+                # Then scan for betting opportunities if no active bets
+                if not has_active_bets:
+                    await run_betting_cycle(betting_system)
+                
+                # Wait with countdown and command processing
+                wait_seconds = 60  # Default wait time
+                
+                print(f"\nWaiting {wait_seconds} seconds before next cycle...")
+                print("Enter commands during this time. Type 'help' for available commands.")
+                
+                # Process commands during wait period
+                for remaining in range(wait_seconds, 0, -1):
+                    if shutdown_event.is_set() or cmd_processor.should_exit:
+                        break
+                        
+                    # Display countdown
+                    cmd_processor.print_countdown(remaining)
                     
-                # Display countdown
-                cmd_processor.print_countdown(remaining)
-                
-                # Check for input with timeout (non-blocking)
-                ready_to_read, _, _ = select.select([sys.stdin], [], [], 0.1)
-                
-                if ready_to_read:
-                    command = sys.stdin.readline().strip()
-                    print()  # New line after input
+                    # Check for input with timeout (non-blocking)
+                    ready_to_read, _, _ = select.select([sys.stdin], [], [], 0.1)
                     
-                    if command:
-                        await cmd_processor.process_command(command)
-                    else:
-                        # Empty input (just Enter) shows status
-                        await cmd_processor.cmd_status()
-                
-                # Sleep briefly to prevent CPU spinning
-                await asyncio.sleep(0.9)
-                
-        except Exception as e:
-            logging.error(f"Error in main loop: {str(e)}")
-            logging.exception(e)
-            # Shorter error retry interval
-            await asyncio.sleep(5)
-    
-    # Perform cleanup before exit
-    if cmd_processor.should_exit:
-        logging.info("Command exit requested")
+                    if ready_to_read:
+                        command = sys.stdin.readline().strip()
+                        print()  # New line after input
+                        
+                        if command:
+                            await cmd_processor.process_command(command)
+                        else:
+                            # Empty input (just Enter) shows status
+                            await cmd_processor.cmd_status()
+                    
+                    # Sleep briefly to prevent CPU spinning
+                    await asyncio.sleep(0.9)
+                    
+            except asyncio.CancelledError:
+                # Handle task cancellation
+                logging.info("Main loop task cancelled")
+                break
+            except Exception as e:
+                logging.error(f"Error in main loop: {str(e)}")
+                logging.exception(e)
+                # Shorter error retry interval
+                await asyncio.sleep(5)
+    finally:
+        # Ensure cleanup runs
+        if cmd_processor.should_exit:
+            logging.info("Command exit requested")
+        
+        # Cancel the result poller task if it's still running
+        if not result_poller_task.done():
+            result_poller_task.cancel()
+            try:
+                await result_poller_task
+            except asyncio.CancelledError:
+                pass
+        
         await cleanup(betting_system)
 
 def handle_shutdown(signum, frame):
-    """Handle shutdown signals"""
+    """Handle shutdown signals with improved handling for repeated signals"""
+    global shutdown_event, shutdown_in_progress
+    
+    # If shutdown is already in progress, force exit on repeated signals
+    if shutdown_in_progress:
+        print("\nForced exit due to repeated shutdown signals")
+        logging.warning("Forced exit due to repeated shutdown signals")
+        os._exit(1)  # Force immediate exit
+    
+    # Set flags for graceful shutdown
+    print("\nShutdown signal received. Press Ctrl+C again to force exit.")
     logging.info("Shutdown signal received")
+    shutdown_in_progress = True
+    
     if shutdown_event:
         shutdown_event.set()
 
 async def cleanup(betting_system: BettingSystem):
-    """Perform cleanup operations"""
+    """Perform cleanup operations with timeout"""
     try:
+        print("\nShutting down. Please wait...")
+        
         # Display final status
         await display_status(betting_system)
         
-        # Gracefully shutdown the betting system
-        await betting_system.shutdown()
+        # Set a timeout for graceful shutdown
+        try:
+            # Use wait_for to set a timeout for the shutdown
+            await asyncio.wait_for(betting_system.shutdown(), timeout=10.0)
+        except asyncio.TimeoutError:
+            print("Shutdown timed out. Some operations may not have completed.")
+            logging.warning("Shutdown timed out. Some operations may not have completed.")
         
         logging.info("Cleanup completed")
         print("System shutdown complete. Goodbye!")
@@ -206,9 +241,10 @@ async def cleanup(betting_system: BettingSystem):
 
 async def main():
     """Entry point for the betting system"""
-    global shutdown_event
+    global shutdown_event, shutdown_in_progress
     print("Setting up shutdown event...")
     shutdown_event = asyncio.Event()
+    shutdown_in_progress = False
     
     # Load environment variables
     print("Loading environment variables...")
@@ -233,6 +269,9 @@ async def main():
     # Setup signal handlers
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
+    
+    # Create a reference to the main task so we can cancel it
+    main_task = None
     
     try:
         # Initialize configuration manager
@@ -294,22 +333,39 @@ async def main():
             await display_status(betting_system)
             
             try:
-                # Run main loop with command processing
-                print("Starting main loop with command interface...")
-                await main_loop_with_commands(betting_system)
+                # Create the main loop task
+                main_task = asyncio.create_task(main_loop_with_commands(betting_system))
+                
+                # Wait for shutdown event or task completion
+                await shutdown_event.wait()
+                
+                # Cancel the main task if it's still running
+                if main_task and not main_task.done():
+                    main_task.cancel()
+                    try:
+                        await main_task
+                    except asyncio.CancelledError:
+                        pass
+                
             except asyncio.CancelledError:
-                print("Main loop cancelled")
-                logging.info("Main loop cancelled")
+                print("Main task cancelled")
+                logging.info("Main task cancelled")
             finally:
                 # Ensure cleanup runs
-                print("Running cleanup...")
-                await cleanup(betting_system)
+                if not shutdown_in_progress:
+                    # This can happen if the main task exits without setting shutdown_event
+                    print("Running cleanup...")
+                    await cleanup(betting_system)
             
     except Exception as e:
         print(f"Fatal error: {str(e)}")
         logging.error(f"Fatal error: {str(e)}")
         logging.exception(e)
     finally:
+        # Cancel the main task if it exists and is still running
+        if main_task and not main_task.done():
+            main_task.cancel()
+        
         # Ensure all tasks are cancelled
         print("Cancelling remaining tasks...")
         for task in asyncio.all_tasks():
