@@ -4,7 +4,7 @@ settle_bet_command.py
 Improved Command pattern implementation for bet settlement operations.
 Uses real Betfair API results instead of simulation.
 Handles validation, execution, and recording of bet settlements.
-Enhanced with consistent selection ID handling.
+Enhanced with consistent selection ID handling and unified market data retrieval.
 """
 
 from dataclasses import dataclass
@@ -97,10 +97,10 @@ class BetSettlementCommand:
             self.logger.info(
                 f"Checking result for bet: Market {market_id}, "
                 f"Selection {selection_id} ({team_name}), "
-                f"Stake: £{stake}, Odds: {odds}"
+                f"Stake: Â£{stake}, Odds: {odds}"
             )
             
-            # Get result from Betfair
+            # Get result from Betfair using consistent method
             won, status_message = await self.betfair_client.get_market_result(
                 market_id, selection_id
             )
@@ -147,14 +147,14 @@ class BetSettlementCommand:
                 profit = request.force_profit
                 status = "Forced settlement"
                 self.logger.info(
-                    f"Using forced settlement result: Won: {won}, Profit: £{profit} "
+                    f"Using forced settlement result: Won: {won}, Profit: Â£{profit} "
                     f"for selection {selection_id} ({team_name})"
                 )
             else:
                 # Get actual result from Betfair
                 won, profit, status = await self.check_bet_result(bet_details)
                 self.logger.info(
-                    f"Got result from Betfair: Won: {won}, Profit: £{profit}, Status: {status} "
+                    f"Got result from Betfair: Won: {won}, Profit: Â£{profit}, Status: {status} "
                     f"for selection {selection_id} ({team_name})"
                 )
             
@@ -178,7 +178,7 @@ class BetSettlementCommand:
                 self.logger.info(
                     f"Successfully settled bet: Market ID {request.market_id}, "
                     f"Selection: {selection_id} ({team_name}), "
-                    f"Won: {won}, Profit: £{profit}"
+                    f"Won: {won}, Profit: Â£{profit}"
                 )
                 
                 # Get updated bet details
@@ -225,8 +225,8 @@ class BetSettlementCommand:
                     f"Selection {selection_id} ({team_name})"
                 )
                 
-                # Check if market is settled
-                market_status = await self.betfair_client.check_market_status(market_id)
+                # Check if market is settled using consistent method
+                market_status = await self.betfair_client.get_fresh_market_data(market_id)
                 
                 if market_status and market_status.get('status') in ['CLOSED', 'SETTLED']:
                     self.logger.info(

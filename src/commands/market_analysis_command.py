@@ -3,7 +3,8 @@ market_analysis_command.py
 
 Improved Command pattern implementation for market analysis operations.
 Handles validation and analysis of betting markets according to strategy criteria.
-Includes double-checking of market data to ensure consistent odds mapping.
+Completely refactored to ensure consistent market data retrieval and odds values
+to prevent discrepancies between initial scan and confirmation.
 """
 
 from dataclasses import dataclass
@@ -108,7 +109,7 @@ class MarketAnalysisCommand:
                 # Add to runner details
                 runner_details.append(
                     f"{team_name} (ID: {selection_id}, Priority: {sort_priority}, "
-                    f"Win: {back_price} / Available: £{back_size})"
+                    f"Win: {back_price} / Available: Â£{back_size})"
                 )
             
             # Log the full market details
@@ -120,99 +121,112 @@ class MarketAnalysisCommand:
         except Exception as e:
             self.logger.error(f"Error logging market details: {str(e)}")
 
-    async def _confirm_opportunity(
-        self, 
-        market_id: str, 
-        selection_id: int, 
-        initial_odds: float,
+    async def _analyze_individual_market(
+        self,
+        market_id: str,
+        event_name: str,
         current_balance: float,
         request: MarketAnalysisRequest
-    ) -> Tuple[bool, float]:
+    ) -> Optional[Dict]:
         """
-        Double-check a betting opportunity with fresh market data
+        Analyze a single market directly with fresh data
         
         Args:
-            market_id: Market ID to check
-            selection_id: Selection ID to check
-            initial_odds: Initial odds discovered
-            current_balance: Current account balance for liquidity check
-            request: Original analysis request parameters
+            market_id: Market ID to analyze
+            event_name: Event name for logging
+            current_balance: Current account balance for stake calculations
+            request: Analysis request parameters
             
         Returns:
-            Tuple of (confirmed: bool, fresh_odds: float)
+            Betting opportunity if found, None otherwise
         """
         try:
-            # Get fresh market data
-            fresh_market = await self.betfair_client.check_market_status(market_id)
+            self.logger.info(f"Analyzing market {market_id} - {event_name} with fresh data")
             
-            if not fresh_market:
-                self.logger.warning(f"Could not retrieve fresh market data for {market_id}")
-                return False, initial_odds
+            # Get fresh market data directly with consistent approach
+            market_data = await self.betfair_client.get_fresh_market_data(market_id, price_depth=3)
             
-            # Check if market is now in-play
-            if fresh_market.get('inplay'):
-                self.logger.warning(f"Market {market_id} is now in-play, skipping opportunity")
-                return False, initial_odds
+            if not market_data:
+                self.logger.error(f"Failed to get market data for {market_id}")
+                return None
+                
+            # Skip if market is in-play
+            if market_data.get('inplay'):
+                self.logger.debug(f"Skipping in-play market: {event_name}")
+                return None
+                
+            # Get event details
+            event = market_data.get('event', {})
+            event_id = event.get('id', 'Unknown')
             
-            # Find the specific selection
-            for runner in fresh_market.get('runners', []):
-                if runner.get('selectionId') == selection_id:
-                    # Get fresh odds
-                    ex = runner.get('ex', {})
-                    available_to_back = ex.get('availableToBack', [{}])[0]
-                    
-                    if not available_to_back:
-                        self.logger.warning(f"No available back price for selection {selection_id}")
-                        return False, initial_odds
-                    
-                    fresh_odds = available_to_back.get('price', 0)
-                    available_size = available_to_back.get('size', 0)
-                    
-                    # Check if odds have changed significantly
-                    odds_delta = abs(fresh_odds - initial_odds)
-                    odds_percent_change = (odds_delta / initial_odds) * 100
-                    
+            # Process runners with consistent naming
+            runners = market_data.get('runners', [])
+            
+            # Ensure runners are sorted by sortPriority for consistent processing
+            runners = sorted(runners, key=lambda r: r.get('sortPriority', 999))
+            
+            # Use the selection mapper to derive accurate team mappings
+            runners = await self.selection_mapper.derive_teams_from_event(
+                event_id=event_id,
+                event_name=event_name,
+                runners=runners
+            )
+            
+            # Log detailed market information
+            await self._log_market_details(market_id, event_name, runners)
+            
+            # Check betting criteria for each runner
+            for runner in runners:
+                selection_id = runner.get('selectionId')
+                team_name = runner.get('teamName', 'Unknown')
+                
+                # Get available prices
+                ex = runner.get('ex', {})
+                available_to_back = ex.get('availableToBack', [{}])[0]
+                
+                if not available_to_back:
+                    continue
+                
+                # Get best back price and size
+                odds = available_to_back.get('price', 0)
+                available_size = available_to_back.get('size', 0)
+                
+                # Check market criteria
+                meets_criteria, reason = self.validate_market_criteria(
+                    odds,
+                    available_size,
+                    current_balance,
+                    request
+                )
+                
+                if meets_criteria:
                     self.logger.info(
-                        f"Odds check - Initial: {initial_odds}, Fresh: {fresh_odds}, "
-                        f"Delta: {odds_delta:.4f}, Percent Change: {odds_percent_change:.2f}%"
+                        f"Found betting opportunity: {event_name}, "
+                        f"Selection: {team_name}, Odds: {odds}, "
+                        f"Selection ID: {selection_id}"
                     )
                     
-                    # If odds have changed by more than 2%, re-validate criteria
-                    if odds_percent_change > 2.0:
-                        self.logger.warning(
-                            f"Significant odds change for selection {selection_id}: "
-                            f"{initial_odds} -> {fresh_odds} ({odds_percent_change:.2f}%)"
-                        )
-                        
-                        # Re-validate criteria with fresh odds
-                        meets_criteria, reason = self.validate_market_criteria(
-                            fresh_odds,
-                            available_size,
-                            current_balance,
-                            request
-                        )
-                        
-                        return meets_criteria, fresh_odds
-                    
-                    # Check if liquidity is still sufficient
-                    if available_size < current_balance * request.liquidity_factor:
-                        self.logger.warning(
-                            f"Insufficient liquidity for selection {selection_id}: "
-                            f"{available_size} < {current_balance * request.liquidity_factor}"
-                        )
-                        return False, fresh_odds
-                    
-                    # If odds haven't changed significantly and liquidity is still good, confirm opportunity
-                    return True, fresh_odds
+                    return await self._create_betting_opportunity(
+                        market_id=market_id,
+                        event_id=event_id,
+                        market=market_data,
+                        runner=runner,
+                        odds=odds,
+                        stake=current_balance,
+                        available_volume=available_size
+                    )
+                else:
+                    self.logger.debug(
+                        f"Selection {team_name} doesn't meet criteria: {reason}"
+                    )
             
-            # Selection not found in fresh market data
-            self.logger.warning(f"Selection {selection_id} not found in fresh market data")
-            return False, initial_odds
-        
+            # No suitable selections found in this market
+            return None
+            
         except Exception as e:
-            self.logger.error(f"Error confirming opportunity: {str(e)}")
+            self.logger.error(f"Error analyzing individual market: {str(e)}")
             self.logger.exception(e)
-            return False, initial_odds
+            return None
 
     async def _create_betting_opportunity(
         self,
@@ -232,7 +246,7 @@ class MarketAnalysisCommand:
             event_id: Betfair event ID
             market: Market data dictionary
             runner: Runner (selection) data dictionary
-            odds: Current odds (double-checked)
+            odds: Current odds
             stake: Stake amount
             available_volume: Available liquidity
             
@@ -276,7 +290,7 @@ class MarketAnalysisCommand:
             self.logger.info(
                 f"Created betting opportunity: Market: {market_id}, Event: {event_name}, "
                 f"Selection: {team_name} (ID: {selection_id}, Priority: {sort_priority}), "
-                f"Odds: {odds}, Stake: £{stake}"
+                f"Odds: {odds}, Stake: Â£{stake}"
             )
             
             return opportunity
@@ -315,26 +329,20 @@ class MarketAnalysisCommand:
                 f"Analyzing markets (attempt {request.polling_count + 1}/{request.max_polling_attempts})"
             )
             
-            # Get football markets data
-            markets, market_books = await self.betfair_client.get_markets_with_odds(request.max_markets)
+            # Get football markets data for initial list only
+            markets, _ = await self.betfair_client.get_markets_with_odds(request.max_markets)
             
-            if not markets or not market_books:
+            if not markets:
                 self.logger.error("Failed to get market data")
                 return None
             
             self.logger.info(f"Analyzing {len(markets)} football markets")
             
-            # Process each market
-            for market, market_book in zip(markets, market_books):
+            # Process each market individually with fresh data
+            for market in markets:
                 market_id = market.get('marketId')
                 event = market.get('event', {})
-                event_id = event.get('id', 'Unknown')
                 event_name = event.get('name', 'Unknown')
-                
-                # Skip if market is in-play
-                if market_book.get('inplay'):
-                    self.logger.debug(f"Skipping in-play market: {event_name}")
-                    continue
                 
                 # Check market start time
                 market_start_time = market.get('marketStartTime')
@@ -342,85 +350,16 @@ class MarketAnalysisCommand:
                     formatted_time = self._format_market_time(market_start_time)
                     self.logger.info(f"Analyzing market: {event_name} (Start: {formatted_time})")
                 
-                # Process runners with consistent naming
-                runners = market_book.get('runners', [])
-                
-                # Ensure runners are sorted by sortPriority for consistent processing
-                runners = sorted(runners, key=lambda r: r.get('sortPriority', 999))
-                
-                # Use the selection mapper to derive accurate team mappings
-                runners = await self.selection_mapper.derive_teams_from_event(
-                    event_id=event_id,
-                    event_name=event_name,
-                    runners=runners
+                # Analyze individual market with fresh data
+                opportunity = await self._analyze_individual_market(
+                    market_id,
+                    event_name,
+                    current_balance,
+                    request
                 )
                 
-                # Log detailed market information
-                await self._log_market_details(market_id, event_name, runners)
-                
-                # Check betting criteria for each runner
-                for runner in runners:
-                    selection_id = runner.get('selectionId')
-                    team_name = runner.get('teamName', 'Unknown')
-                    
-                    # Get available prices
-                    ex = runner.get('ex', {})
-                    available_to_back = ex.get('availableToBack', [{}])[0]
-                    
-                    if not available_to_back:
-                        continue
-                    
-                    # Get best back price and size
-                    odds = available_to_back.get('price', 0)
-                    available_size = available_to_back.get('size', 0)
-                    
-                    # Check market criteria
-                    meets_criteria, reason = self.validate_market_criteria(
-                        odds,
-                        available_size,
-                        current_balance,
-                        request
-                    )
-                    
-                    if meets_criteria:
-                        self.logger.info(
-                            f"Found potential betting opportunity: {event_name}, "
-                            f"Selection: {team_name}, Odds: {odds}"
-                        )
-                        
-                        # Double-check with fresh market data before finalizing
-                        opportunity_confirmed, fresh_odds = await self._confirm_opportunity(
-                            market_id, 
-                            selection_id, 
-                            odds,
-                            current_balance,
-                            request
-                        )
-                        
-                        if opportunity_confirmed:
-                            self.logger.info(
-                                f"Confirmed betting opportunity: {event_name}, "
-                                f"Selection: {team_name}, Initial Odds: {odds}, Final Odds: {fresh_odds}"
-                            )
-                            
-                            return await self._create_betting_opportunity(
-                                market_id=market_id,
-                                event_id=event_id,
-                                market=market,
-                                runner=runner,
-                                odds=fresh_odds,  # Use the fresh odds
-                                stake=current_balance,
-                                available_volume=available_size
-                            )
-                        else:
-                            self.logger.warning(
-                                f"Opportunity not confirmed for {team_name} in {event_name}. "
-                                f"Initial odds: {odds}, Fresh odds: {fresh_odds}"
-                            )
-                    else:
-                        self.logger.debug(
-                            f"Selection {team_name} doesn't meet criteria: {reason}"
-                        )
+                if opportunity:
+                    return opportunity
             
             # No suitable markets found in this polling attempt
             self.logger.info("No suitable markets found in this polling attempt")

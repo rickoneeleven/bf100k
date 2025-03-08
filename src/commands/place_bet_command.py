@@ -4,6 +4,7 @@ place_bet_command.py
 Implements async Command pattern for bet placement operations.
 Handles validation, execution, and recording of bet placement.
 Enhanced with improved selection ID to team name mapping for consistency.
+Updated to use consistent market data retrieval method.
 """
 
 from dataclasses import dataclass
@@ -71,15 +72,13 @@ class PlaceBetCommand:
             if request.stake > account_status.current_balance:
                 return False, f"Insufficient funds: stake {request.stake} > balance {account_status.current_balance}"
                 
-            # Validate market liquidity
+            # Validate market liquidity using consistent market data retrieval
             try:
                 # Get fresh market data to ensure accurate odds
-                market_books = await self.betfair_client.list_market_book([request.market_id])
-                if not market_books:
+                market = await self.betfair_client.get_fresh_market_data(request.market_id)
+                if not market:
                     return False, "Failed to retrieve market data"
                     
-                market = market_books[0]
-                
                 # Check market status
                 if market.get('inplay'):
                     return False, "Cannot place bet on in-play market"
@@ -161,11 +160,9 @@ class PlaceBetCommand:
                 self.logger.error(f"Validation failed: {error}")
                 return None
             
-            # Get additional market info to ensure we have the market_start_time
-            market_books = await self.betfair_client.list_market_book([request.market_id])
-            market_start_time = None
-            if market_books and market_books[0]:
-                market_start_time = market_books[0].get('marketStartTime')
+            # Get fresh market data with consistent method
+            market = await self.betfair_client.get_fresh_market_data(request.market_id)
+            market_start_time = market.get('marketStartTime') if market else None
             
             # Get team name for the selection from the mapper
             team_name = await self.selection_mapper.get_team_name(
@@ -176,8 +173,8 @@ class PlaceBetCommand:
             if not team_name:
                 # Create/update the mapping if not found
                 # First try to get team mappings from a fresh market lookup
-                if market_books and market_books[0]:
-                    runners = market_books[0].get('runners', [])
+                if market:
+                    runners = market.get('runners', [])
                     runners = await self.selection_mapper.derive_teams_from_event(
                         request.event_id,
                         request.event_name,
@@ -207,8 +204,8 @@ class PlaceBetCommand:
             
             # Find sort priority for the selection (for consistent ordering)
             sort_priority = 999
-            if market_books and market_books[0]:
-                for runner in market_books[0].get('runners', []):
+            if market:
+                for runner in market.get('runners', []):
                     if runner.get('selectionId') == request.selection_id:
                         sort_priority = runner.get('sortPriority', 999)
                         break
@@ -234,7 +231,7 @@ class PlaceBetCommand:
             self.logger.info(
                 f"Successfully placed bet: Market ID {request.market_id}, "
                 f"Selection: {team_name} (ID: {request.selection_id}, Priority: {sort_priority}), "
-                f"Stake £{request.stake}, Odds: {request.odds}"
+                f"Stake Â£{request.stake}, Odds: {request.odds}"
             )
             
             return bet_details

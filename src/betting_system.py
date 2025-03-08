@@ -9,6 +9,7 @@ Updates include:
 - Improved selection diversity with continuous market checking
 - Configurable parameters
 - More robust error handling and logging
+- Updated to ensure consistent market data retrieval
 """
 
 import logging
@@ -96,7 +97,7 @@ class BettingSystem:
             self.logger.info(
                 f"Scanning markets - Cycle #{cycle_info['current_cycle']}, "
                 f"Bet #{cycle_info['current_bet_in_cycle'] + 1} in cycle, "
-                f"Balance: £{account_status.current_balance:.2f}"
+                f"Balance: Â£{account_status.current_balance:.2f}"
             )
             
             # Execute market analysis with polling
@@ -110,8 +111,8 @@ class BettingSystem:
                         f"Selection: {betting_opportunity['team_name']}\n"
                         f"Selection ID: {betting_opportunity['selection_id']}\n"
                         f"Odds: {betting_opportunity['odds']}\n"
-                        f"Stake: £{betting_opportunity['stake']}\n"
-                        f"Available Volume: £{betting_opportunity['available_volume']}"
+                        f"Stake: Â£{betting_opportunity['stake']}\n"
+                        f"Available Volume: Â£{betting_opportunity['available_volume']}"
                     )
                 return betting_opportunity
             
@@ -186,7 +187,7 @@ class BettingSystem:
                     f"[DRY RUN] Simulated bet placement: "
                     f"Match: {betting_opportunity['event_name']}, "
                     f"Selection: {betting_opportunity['team_name']}, "
-                    f"Stake: £{betting_opportunity['stake']}, "
+                    f"Stake: Â£{betting_opportunity['stake']}, "
                     f"Odds: {betting_opportunity['odds']}"
                 )
                 
@@ -213,7 +214,7 @@ class BettingSystem:
                     f"Match: {betting_opportunity['event_name']}\n"
                     f"Selection: {betting_opportunity['team_name']}\n"
                     f"Selection ID: {betting_opportunity['selection_id']}\n"
-                    f"Stake: £{request.stake}\n"
+                    f"Stake: Â£{request.stake}\n"
                     f"Odds: {request.odds}"
                 )
             return bet_details
@@ -267,20 +268,20 @@ class BettingSystem:
                 # Reset to starting stake for new cycle if target reached
                 initial_stake = await self.config_manager.get_initial_stake()
                 await self.account_repository.reset_to_starting_stake(initial_stake)
-                self.logger.info(f"Target reached! Reset to starting stake (£{initial_stake}) for new cycle.")
+                self.logger.info(f"Target reached! Reset to starting stake (Â£{initial_stake}) for new cycle.")
             elif not settled_bet.get('won', False):
                 # Reset to starting stake after a loss
                 initial_stake = await self.config_manager.get_initial_stake()
                 await self.account_repository.reset_to_starting_stake(initial_stake)
-                self.logger.info(f"Bet lost. Reset to starting stake (£{initial_stake}) for new cycle.")
+                self.logger.info(f"Bet lost. Reset to starting stake (Â£{initial_stake}) for new cycle.")
             
             self.logger.info(
                 f"Successfully settled bet:\n"
                 f"Match: {settled_bet.get('event_name', 'Unknown Event')}\n"
                 f"Selection: {settled_bet.get('team_name', 'Unknown Team')}\n"
                 f"Won: {settled_bet.get('won', False)}\n"
-                f"Profit: £{settled_bet.get('profit', 0.0)}\n"
-                f"New Balance: £{account_status.current_balance}"
+                f"Profit: Â£{settled_bet.get('profit', 0.0)}\n"
+                f"New Balance: Â£{account_status.current_balance}"
             )
             
             return settled_bet
@@ -417,7 +418,7 @@ class BettingSystem:
             initial_stake: Initial stake amount for the new cycle
         """
         try:
-            self.logger.info(f"Resetting entire betting system with initial stake: £{initial_stake}")
+            self.logger.info(f"Resetting entire betting system with initial stake: Â£{initial_stake}")
             
             # Reset account stats (instead of just the balance)
             await self.account_repository.reset_account_stats(initial_stake)
@@ -474,8 +475,8 @@ class BettingSystem:
                     f"Team: {bet.get('team_name', 'Unknown')}"
                 )
                 
-                # Get current market status
-                market_info = await self.betfair_client.check_market_status(market_id)
+                # Get current market status with consistent method
+                market_info = await self.betfair_client.get_fresh_market_data(market_id)
                 
                 if market_info:
                     # Log the market info structure to help debug

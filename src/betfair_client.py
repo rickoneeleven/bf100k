@@ -6,6 +6,7 @@ Enhanced Betfair API client with additional capabilities:
 - Improved market discovery with consistent selection mapping
 - More robust connection handling
 - Fixed odds mapping between initial market discovery and active bet display
+- ENHANCED: Consistent market data retrieval to fix odds discrepancies
 """
 
 import os
@@ -303,7 +304,8 @@ class BetfairClient:
     async def list_market_book(
         self,
         market_ids: List[str],
-        market_catalogue: List[Dict] = None
+        market_catalogue: List[Dict] = None,
+        price_projection: Dict = None
     ) -> Optional[List[Dict]]:
         """
         Get detailed market data including prices for specified markets with improved selection mapping
@@ -311,6 +313,7 @@ class BetfairClient:
         Args:
             market_ids: List of market IDs to retrieve
             market_catalogue: Market catalogue data for mapping (if None, will fetch fresh data)
+            price_projection: Optional custom price projection parameters
         
         Returns:
             List of market books with mapped event data and properly sorted runners
@@ -331,17 +334,21 @@ class BetfairClient:
             # Create market catalogue lookup
             catalogue_lookup = {market['marketId']: market for market in market_catalogue} if market_catalogue else {}
             
+            # Use provided price projection or default
+            if not price_projection:
+                price_projection = {
+                    'priceData': ['EX_BEST_OFFERS'],
+                    'exBestOffersOverrides': {
+                        'bestPricesDepth': 3  # Standardized to depth of 3 for consistency
+                    }
+                }
+            
             payload = {
                 'jsonrpc': '2.0',
                 'method': 'SportsAPING/v1.0/listMarketBook',
                 'params': {
                     'marketIds': market_ids,
-                    'priceProjection': {
-                        'priceData': ['EX_BEST_OFFERS'],
-                        'exBestOffersOverrides': {
-                            'bestPricesDepth': 1
-                        }
-                    }
+                    'priceProjection': price_projection
                 },
                 'id': 1
             }
@@ -405,6 +412,48 @@ class BetfairClient:
             self.logger.exception(e)
             return None
 
+    async def get_fresh_market_data(self, market_id: str, price_depth: int = 3) -> Optional[Dict]:
+        """
+        Get consistent, fresh market data with specified price depth
+        
+        Args:
+            market_id: Market ID to retrieve
+            price_depth: Depth of price data to retrieve (default: 3)
+            
+        Returns:
+            Fresh market data with enhanced mapping and consistent price depth
+        """
+        try:
+            # Log that we're getting fresh market data with the specified depth
+            self.logger.debug(f"Getting fresh market data for {market_id} with price depth {price_depth}")
+            
+            # Get market catalogue for enhanced mapping
+            catalogue_data = await self._get_market_catalogue_for_ids([market_id])
+            
+            # Ensure consistent price projection
+            price_projection = {
+                'priceData': ['EX_BEST_OFFERS'],
+                'exBestOffersOverrides': {
+                    'bestPricesDepth': price_depth
+                }
+            }
+            
+            # Get market book with consistent price depth
+            market_books = await self.list_market_book([market_id], catalogue_data, price_projection)
+            
+            if market_books and len(market_books) > 0:
+                market_data = market_books[0]
+                self.logger.debug(f"Successfully retrieved fresh market data for {market_id}")
+                return market_data
+                
+            self.logger.warning(f"Failed to get fresh market data for {market_id}")
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Error getting fresh market data: {str(e)}")
+            self.logger.exception(e)
+            return None
+
     async def get_markets_with_odds(self, max_results: int = 10) -> Tuple[Optional[List[Dict]], Optional[List[Dict]]]:
         """
         Get both market catalogue and price data for top football markets with enhanced mapping
@@ -423,18 +472,26 @@ class BetfairClient:
         # Get market IDs
         market_ids = [market['marketId'] for market in markets]
         
+        # Standard price projection with consistent depth
+        price_projection = {
+            'priceData': ['EX_BEST_OFFERS'],
+            'exBestOffersOverrides': {
+                'bestPricesDepth': 3  # Standardized to depth of 3 for consistency
+            }
+        }
+        
         # Get market books with improved catalogue data mapping
-        market_books = await self.list_market_book(market_ids, markets)
+        market_books = await self.list_market_book(market_ids, markets, price_projection)
         if not market_books:
             return None, None
         
         self.logger.info(f"Retrieved {len(market_books)} market books with enhanced mapping")
         
         return markets, market_books
-        
+
     async def check_market_status(self, market_id: str) -> Optional[Dict]:
         """
-        Check current status of a market with enhanced data and consistent runner mapping
+        Get current market status using consistent approach for reliable data
         
         Args:
             market_id: Betfair market ID
@@ -442,97 +499,19 @@ class BetfairClient:
         Returns:
             Enhanced market status information or None if error
         """
-        if not self.session_token:
-            self.logger.error('No session token available - please login first')
-            return None
+        # Use the new consistent method for retrieving market data
+        market_data = await self.get_fresh_market_data(market_id, price_depth=3)
+        
+        if market_data:
+            self.logger.info(
+                f"Market {market_id} status: {market_data.get('status')}, "
+                f"Inplay: {market_data.get('inplay')}"
+            )
+            return market_data
             
-        try:
-            session = await self.ensure_session()
-            
-            # Get market catalogue data first for event details and start time
-            catalogue_data = None
-            catalogue_data_list = await self._get_market_catalogue_for_ids([market_id])
-            if catalogue_data_list and len(catalogue_data_list) > 0:
-                catalogue_data = catalogue_data_list[0]
-            
-            # Get market book data with prices
-            book_payload = {
-                'jsonrpc': '2.0',
-                'method': 'SportsAPING/v1.0/listMarketBook',
-                'params': {
-                    'marketIds': [market_id],
-                    'priceProjection': {
-                        'priceData': ['EX_BEST_OFFERS'],
-                        'exBestOffersOverrides': {
-                            'bestPricesDepth': 3
-                        }
-                    }
-                },
-                'id': 1
-            }
-            
-            headers = {
-                'X-Application': self.app_key,
-                'X-Authentication': self.session_token,
-                'content-type': 'application/json'
-            }
-            
-            # Get market price data
-            market_book = None
-            async with session.post(self.betting_url, json=book_payload, headers=headers) as resp:
-                if resp.status == 200:
-                    resp_json = await resp.json()
-                    if 'result' in resp_json and resp_json['result']:
-                        market_book = resp_json['result'][0]
-                        
-                        # If we have catalogue data, merge it with market book
-                        if catalogue_data:
-                            # Add event and competition details
-                            market_book['event'] = catalogue_data.get('event', {})
-                            market_book['competition'] = catalogue_data.get('competition', {})
-                            market_book['marketName'] = catalogue_data.get('marketName', 'Unknown Market')
-                            market_book['marketStartTime'] = catalogue_data.get('marketStartTime')
-                            
-                            # Create consistent runner mapping by selection ID
-                            runner_map = {
-                                str(r['selectionId']): {
-                                    'runnerName': r.get('runnerName', 'Unknown'),
-                                    'sortPriority': r.get('sortPriority', 999)
-                                } 
-                                for r in catalogue_data.get('runners', [])
-                            }
-                            
-                            # Update runner details using consistent mapping
-                            for runner in market_book.get('runners', []):
-                                selection_id = str(runner.get('selectionId'))
-                                if selection_id in runner_map:
-                                    runner['runnerName'] = runner_map[selection_id]['runnerName']
-                                    runner['sortPriority'] = runner_map[selection_id]['sortPriority']
-                            
-                            # Sort runners by sortPriority for consistent ordering
-                            market_book['runners'] = sorted(
-                                market_book.get('runners', []),
-                                key=lambda r: r.get('sortPriority', 999)
-                            )
-                        
-                        self.logger.info(
-                            f"Market {market_id} status: {market_book.get('status')}, "
-                            f"Inplay: {market_book.get('inplay')}"
-                        )
-                        return market_book
-                    else:
-                        error_msg = resp_json.get('error', 'Unknown error')
-                        self.logger.error(f'Error checking market status: {error_msg}')
-                        return None
-                else:
-                    self.logger.error(f'Request failed with status code: {resp.status}')
-                    return None
-                    
-        except Exception as e:
-            self.logger.error(f'Exception during check_market_status: {str(e)}')
-            self.logger.exception(e)
-            return None
-            
+        self.logger.error(f"Failed to retrieve market status for {market_id}")
+        return None
+
     async def check_settled_market(self, market_id: str) -> Optional[Dict]:
         """
         Check if a market has been settled and get the results
@@ -550,8 +529,8 @@ class BetfairClient:
         try:
             session = await self.ensure_session()
             
-            # First, check if the market is closed
-            market_status = await self.check_market_status(market_id)
+            # First, check if the market is closed using consistent method
+            market_status = await self.get_fresh_market_data(market_id)
             if not market_status:
                 self.logger.warning(f"Failed to get market status for {market_id}")
                 return None
@@ -611,8 +590,8 @@ class BetfairClient:
             Tuple of (won: bool, status_message: str)
         """
         try:
-            # First check market status
-            market_status = await self.check_market_status(market_id)
+            # Use consistent method to check market status
+            market_status = await self.get_fresh_market_data(market_id)
             if not market_status:
                 return False, "Could not retrieve market status"
                 
