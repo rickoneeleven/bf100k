@@ -360,10 +360,6 @@ class MarketAnalysisCommand:
                 
                 # Check betting criteria for each runner
                 for runner in runners:
-                    # Skip "Draw" selections - we're only interested in team selections
-                    if runner.get('teamName', '').lower() == 'draw':
-                        continue
-                    
                     selection_id = runner.get('selectionId')
                     team_name = runner.get('teamName', 'Unknown')
                     
