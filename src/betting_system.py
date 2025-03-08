@@ -1,22 +1,28 @@
 """
-betting_system.py
+betting_system_improved.py
 
-Main system orchestrator that coordinates betting operations using the command pattern.
+Improved betting system that coordinates betting operations using the command pattern.
 Handles async coordination between client, repositories, and commands.
-Updated to support context-aware team mapping and compound betting strategy.
+Updates include:
+- Real result integration instead of simulation
+- Improved selection diversity with continuous market checking
+- Configurable parameters
+- More robust error handling and logging
 """
 
 import logging
+import asyncio
 from typing import Optional, Dict, List
 from datetime import datetime, timezone
 
 from .betfair_client import BetfairClient
-from .commands.market_analysis_command import MarketAnalysisCommand, MarketAnalysisRequest
+from .commands.market_analysis_command import MarketAnalysisCommand
 from .commands.place_bet_command import PlaceBetCommand, PlaceBetRequest
 from .commands.settle_bet_command import BetSettlementCommand, BetSettlementRequest
 from .repositories.bet_repository import BetRepository
 from .repositories.account_repository import AccountRepository
 from .betting_ledger import BettingLedger
+from .config_manager import ConfigManager
 
 class BettingSystem:
     def __init__(
@@ -24,30 +30,37 @@ class BettingSystem:
         betfair_client: BetfairClient,
         bet_repository: BetRepository,
         account_repository: AccountRepository,
-        dry_run: bool = True  # Default to dry run for safety
+        config_manager: ConfigManager
     ):
         self.betfair_client = betfair_client
         self.bet_repository = bet_repository
         self.account_repository = account_repository
-        self.betting_ledger = BettingLedger()  # Initialize ledger
-        self.dry_run = dry_run
-        self.loop_count = 0
+        self.betting_ledger = BettingLedger()
+        self.config_manager = config_manager
         
-        # Initialize commands
+        # Load system configuration
+        config = self.config_manager.get_config()
+        self.dry_run = config.get('system', {}).get('dry_run', True)
+        
+        # Initialize commands with improved versions
         self.market_analysis = MarketAnalysisCommand(
             betfair_client,
             bet_repository,
-            account_repository
+            account_repository,
+            config_manager
         )
+        
         self.place_bet = PlaceBetCommand(
             betfair_client,
             bet_repository,
             account_repository
         )
+        
         self.settle_bet = BetSettlementCommand(
             betfair_client,
             bet_repository,
-            account_repository
+            account_repository,
+            config_manager
         )
         
         # Setup logging
@@ -57,73 +70,67 @@ class BettingSystem:
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
+        
+        # Track running tasks
+        self.tasks = {}
+        self._shutdown_event = asyncio.Event()
 
     async def scan_markets(self) -> Optional[Dict]:
-        """Scan available markets for betting opportunities"""
+        """
+        Scan available markets for betting opportunities
+        
+        Returns:
+            Dict containing betting opportunity if found, None otherwise
+        """
         try:
             if await self.bet_repository.has_active_bets():
+                self.logger.info("Active bet exists - skipping market scan")
                 return None
             
-            # Get current balance and calculate required liquidity
+            # Get current account information
             account_status = await self.account_repository.get_account_status()
-            required_liquidity = account_status.current_balance * 1.1
             
             # Get current cycle info for logging
             cycle_info = await self.betting_ledger.get_current_cycle_info()
             self.logger.info(
                 f"Scanning markets - Cycle #{cycle_info['current_cycle']}, "
                 f"Bet #{cycle_info['current_bet_in_cycle'] + 1} in cycle, "
-                f"Balance: £{account_status.current_balance:.2f}, "
-                f"Required Liquidity: £{required_liquidity:.2f}"
+                f"Balance: £{account_status.current_balance:.2f}"
             )
             
-            async with self.betfair_client as client:
-                markets, market_books = await client.get_markets_with_odds()
-                
-            if not markets or not market_books:
-                self.logger.error("Failed to retrieve match data")
-                return None
+            # Execute market analysis with polling
+            betting_opportunity = await self.market_analysis.execute_with_polling()
             
-            # Get the fifth market ID if available for dry run fallback
-            fifth_market_id = markets[4]['marketId'] if len(markets) >= 5 else None
+            if betting_opportunity:
+                if self.dry_run:
+                    self.logger.info(
+                        f"[DRY RUN] Would place bet:\n"
+                        f"Market ID: {betting_opportunity['market_id']}\n"
+                        f"Selection: {betting_opportunity['team_name']}\n"
+                        f"Selection ID: {betting_opportunity['selection_id']}\n"
+                        f"Odds: {betting_opportunity['odds']}\n"
+                        f"Stake: £{betting_opportunity['stake']}\n"
+                        f"Available Volume: £{betting_opportunity['available_volume']}"
+                    )
+                return betting_opportunity
             
-            # Analyze each market using corresponding market book
-            for market, market_book in zip(markets, market_books):
-                request = MarketAnalysisRequest(
-                    market_id=market['marketId'],
-                    min_odds=3.0,
-                    max_odds=4.0,
-                    liquidity_factor=1.1,
-                    dry_run=self.dry_run,
-                    loop_count=self.loop_count,
-                    fifth_market_id=fifth_market_id
-                )
-                
-                betting_opportunity = await self.market_analysis.execute(request, market, market_book)
-                if betting_opportunity:
-                    if self.dry_run:
-                        self.logger.info(
-                            f"[DRY RUN] Would place bet:\n"
-                            f"Market ID: {betting_opportunity['market_id']}\n"
-                            f"Selection: {betting_opportunity['team_name']}\n"
-                            f"Selection ID: {betting_opportunity['selection_id']}\n"
-                            f"Odds: {betting_opportunity['odds']}\n"
-                            f"Stake: £{betting_opportunity['stake']}\n"
-                            f"Available Volume: £{betting_opportunity['available_volume']}"
-                        )
-                    return betting_opportunity
-
-            # Increment loop count if no opportunity found
-            self.loop_count += 1
             return None
             
         except Exception as e:
-            self.logger.error(f"Error in betting cycle: {str(e)}")
+            self.logger.error(f"Error scanning markets: {str(e)}")
             self.logger.exception(e)
             return None
 
     async def place_bet_order(self, betting_opportunity: Dict) -> Optional[Dict]:
-        """Place a bet based on identified opportunity"""
+        """
+        Place a bet based on identified opportunity
+        
+        Args:
+            betting_opportunity: Dict containing betting opportunity details
+            
+        Returns:
+            Dict containing bet details if successful, None otherwise
+        """
         try:
             # Ensure we have all required fields
             if 'event_id' not in betting_opportunity:
@@ -178,16 +185,25 @@ class BettingSystem:
             self.logger.exception(e)
             return None
 
-    async def settle_bet_order(self, market_id: str, won: bool, profit: float) -> Optional[Dict]:
+    async def settle_bet_order(self, market_id: str, forced_settlement: bool = False, force_won: bool = False, force_profit: float = 0.0) -> Optional[Dict]:
         """
         Settle an existing bet asynchronously
-        Returns updated bet details if successful, None otherwise
+        
+        Args:
+            market_id: Betfair market ID
+            forced_settlement: Whether to force a settlement (for dry run or testing)
+            force_won: Whether the forced settlement should be a win
+            force_profit: Profit amount for forced winning settlement
+            
+        Returns:
+            Dict containing updated bet details if successful, None otherwise
         """
         try:
             request = BetSettlementRequest(
                 market_id=market_id,
-                won=won,
-                profit=profit
+                forced_settlement=forced_settlement,
+                force_won=force_won,
+                force_profit=force_profit
             )
             
             settled_bet = await self.settle_bet.execute(request)
@@ -200,27 +216,32 @@ class BettingSystem:
             
             # Record result in ledger
             await self.betting_ledger.record_bet_result(
-                settled_bet, won, profit, account_status.current_balance
+                settled_bet, 
+                settled_bet.get('won', False), 
+                settled_bet.get('profit', 0.0), 
+                account_status.current_balance
             )
             
             # Check if target reached
-            if won and await self.betting_ledger.check_target_reached(
+            if settled_bet.get('won', False) and await self.betting_ledger.check_target_reached(
                 account_status.current_balance, account_status.target_amount
             ):
                 # Reset to starting stake for new cycle if target reached
-                await self.account_repository.reset_to_starting_stake()
-                self.logger.info("Target reached! Reset to starting stake for new cycle.")
-            elif not won:
+                initial_stake = await self.config_manager.get_initial_stake()
+                await self.account_repository.reset_to_starting_stake(initial_stake)
+                self.logger.info(f"Target reached! Reset to starting stake (£{initial_stake}) for new cycle.")
+            elif not settled_bet.get('won', False):
                 # Reset to starting stake after a loss
-                await self.account_repository.reset_to_starting_stake()
-                self.logger.info("Bet lost. Reset to starting stake for new cycle.")
+                initial_stake = await self.config_manager.get_initial_stake()
+                await self.account_repository.reset_to_starting_stake(initial_stake)
+                self.logger.info(f"Bet lost. Reset to starting stake (£{initial_stake}) for new cycle.")
             
             self.logger.info(
                 f"Successfully settled bet:\n"
                 f"Match: {settled_bet.get('event_name', 'Unknown Event')}\n"
                 f"Selection: {settled_bet.get('team_name', 'Unknown Team')}\n"
-                f"Won: {won}\n"
-                f"Profit: £{profit}\n"
+                f"Won: {settled_bet.get('won', False)}\n"
+                f"Profit: £{settled_bet.get('profit', 0.0)}\n"
                 f"New Balance: £{account_status.current_balance}"
             )
             
@@ -230,6 +251,90 @@ class BettingSystem:
             self.logger.error(f"Error during bet settlement: {str(e)}")
             self.logger.exception(e)
             return None
+
+    async def check_for_results(self) -> List[Dict]:
+        """
+        Check for results of active bets
+        
+        Returns:
+            List of settled bets
+        """
+        try:
+            # Run the settlement checker
+            settled_bets = await self.settle_bet.check_active_bets()
+            
+            if settled_bets:
+                self.logger.info(f"Settled {len(settled_bets)} bets")
+                
+            return settled_bets
+            
+        except Exception as e:
+            self.logger.error(f"Error checking for results: {str(e)}")
+            self.logger.exception(e)
+            return []
+
+    async def start_result_poller(self) -> asyncio.Task:
+        """
+        Start a background task to continuously poll for bet results
+        
+        Returns:
+            asyncio.Task for the result poller
+        """
+        if 'result_poller' in self.tasks and not self.tasks['result_poller'].done():
+            self.logger.info("Result poller already running")
+            return self.tasks['result_poller']
+        
+        self.logger.info("Starting result poller task")
+        
+        async def poller_task():
+            while not self._shutdown_event.is_set():
+                try:
+                    # Only run if there are active bets
+                    if await self.bet_repository.has_active_bets():
+                        # Run the settlement poller
+                        await self.settle_bet.execute_settlement_poller()
+                    
+                    # Check if we should continue or exit
+                    if self._shutdown_event.is_set():
+                        break
+                    
+                    # Wait a bit before checking again
+                    await asyncio.sleep(60)  # Check every minute if there are new active bets
+                    
+                except asyncio.CancelledError:
+                    self.logger.info("Result poller task cancelled")
+                    break
+                except Exception as e:
+                    self.logger.error(f"Error in result poller: {str(e)}")
+                    self.logger.exception(e)
+                    await asyncio.sleep(60)  # Wait before retrying
+        
+        task = asyncio.create_task(poller_task())
+        self.tasks['result_poller'] = task
+        return task
+
+    async def shutdown(self) -> None:
+        """Shutdown the betting system gracefully"""
+        self.logger.info("Shutting down betting system")
+        
+        # Signal shutdown to all tasks
+        self._shutdown_event.set()
+        
+        # Cancel all running tasks
+        for name, task in self.tasks.items():
+            if not task.done():
+                self.logger.info(f"Cancelling {name} task")
+                task.cancel()
+                
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        
+        # Close the Betfair client
+        await self.betfair_client.close_session()
+        
+        self.logger.info("Betting system shutdown complete")
 
     async def get_active_bets(self) -> List[Dict]:
         """Get all currently active bets asynchronously"""

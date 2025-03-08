@@ -1,9 +1,13 @@
 """
-main.py
+main_improved.py
 
-Entry point for the betting system. Handles initialization, main operation loop,
-and graceful shutdown of async components.
-Updated to implement compound betting strategy with bet simulation.
+Entry point for the improved betting system. 
+Handles initialization, main operation loop, and graceful shutdown of async components.
+Updates include:
+- Real result integration instead of simulation
+- Improved selection diversity with continuous market checking
+- Configurable parameters
+- More robust error handling and logging
 """
 
 import os
@@ -21,55 +25,10 @@ from .betfair_client import BetfairClient
 from .repositories.bet_repository import BetRepository
 from .repositories.account_repository import AccountRepository
 from .betting_ledger import BettingLedger
+from .config_manager import ConfigManager
 
 # Global variable for graceful shutdown
 shutdown_event: Optional[asyncio.Event] = None
-
-async def simulate_bet_result(bet_details: Dict) -> tuple[bool, float]:
-    """
-    Simulate a bet result based on odds
-    
-    Args:
-        bet_details: Bet details including odds
-        
-    Returns:
-        Tuple of (won: bool, profit: float)
-    """
-    odds = bet_details.get('odds', 0.0)
-    stake = bet_details.get('stake', 0.0)
-    
-    # Calculate win probability based on odds (roughly inverse of odds)
-    # Example: odds of 3.0 = ~33% chance of winning
-    win_probability = min(1.0 / odds, 0.35)  # Cap at 35% for realism
-    
-    # Add some randomness to avoid always winning or losing
-    random_factor = random.random()
-    
-    # Force some early wins in cycle 1 to demonstrate compounding
-    # but make later bets more likely to lose to demonstrate cycle reset
-    cycle_number = 1  # Default if not provided
-    bet_in_cycle = 1  # Default if not provided
-    
-    if 'cycle_number' in bet_details:
-        cycle_number = bet_details.get('cycle_number', 1)
-    if 'bet_in_cycle' in bet_details:
-        bet_in_cycle = bet_details.get('bet_in_cycle', 1)
-    
-    # For demonstration, make first few bets more likely to win
-    if cycle_number == 1 and bet_in_cycle <= 3:
-        win_probability += 0.2  # Boost win chance for first 3 bets
-    elif bet_in_cycle > 5:
-        win_probability -= 0.1  # Reduce win chance for later bets
-    
-    # Simulate result
-    won = random_factor < win_probability
-    
-    # Calculate profit
-    profit = 0.0
-    if won:
-        profit = stake * (odds - 1)
-        
-    return won, profit
 
 async def run_betting_cycle(betting_system: BettingSystem):
     """Execute a single betting cycle"""
@@ -96,76 +55,45 @@ async def run_betting_cycle(betting_system: BettingSystem):
         logging.error(f"Error in betting cycle: {str(e)}")
         logging.exception(e)
 
-async def monitor_active_bets(betting_system: BettingSystem):
-    """Monitor and update status of active bets"""
+async def check_results(betting_system: BettingSystem):
+    """Check results of active bets"""
     try:
-        # Get active bets
-        active_bets = await betting_system.get_active_bets()
+        # Check for settled bets
+        settled_bets = await betting_system.check_for_results()
         
-        if not active_bets:
-            logging.debug("No active bets to monitor")
-            return
+        if settled_bets:
+            logging.info(f"Found {len(settled_bets)} settled bets")
             
-        logging.info(f"Monitoring {len(active_bets)} active bet(s)")
-            
-        for bet in active_bets:
-            # In a real implementation, we would check the actual market results
-            # For dry run mode, simulate the result
-            if betting_system.dry_run:
-                # Get details for simulation
-                market_id = bet.get('market_id')
-                selection_id = bet.get('selection_id')
-                team_name = bet.get('team_name', 'Unknown Team')
-                odds = bet.get('odds')
-                stake = bet.get('stake')
-                
-                # Simulate result
-                won, profit = await simulate_bet_result(bet)
-                
-                # Log the simulated result
-                result_str = "WON" if won else "LOST"
-                logging.info(
-                    f"[DRY RUN] Simulated bet result: {result_str}\n"
-                    f"Market ID: {market_id}\n"
-                    f"Selection: {team_name}\n"
-                    f"Odds: {odds}\n"
-                    f"Stake: £{stake}\n"
-                    f"Profit: £{profit:.2f}"
-                )
-                
-                # Settle the bet with the simulated result
-                await betting_system.settle_bet_order(market_id, won, profit)
-                
-                # Log updated status
-                status = await betting_system.get_account_status()
-                logging.info(
-                    f"Updated status - Cycle: {status['current_cycle']}, "
-                    f"Balance: £{status['current_balance']:.2f}, "
-                    f"Total cycles: {status['total_cycles']}, "
-                    f"Total money lost: £{status['total_money_lost']:.2f}"
-                )
-                
-                # Break after settling one bet to prevent settling multiple bets at once
-                break
+            # Get updated status
+            status = await betting_system.get_account_status()
+            logging.info(
+                f"Updated status - Cycle: {status['current_cycle']}, "
+                f"Balance: £{status['current_balance']:.2f}, "
+                f"Total cycles: {status['total_cycles']}, "
+                f"Total money lost: £{status['total_money_lost']:.2f}"
+            )
     except Exception as e:
-        logging.error(f"Error monitoring active bets: {str(e)}")
+        logging.error(f"Error checking results: {str(e)}")
         logging.exception(e)
 
 async def main_loop(betting_system: BettingSystem):
     """Main operation loop with faster shutdown response"""
     global shutdown_event
     
+    # Start the result poller in the background
+    await betting_system.start_result_poller()
+    
     while not shutdown_event.is_set():
         try:
-            # First monitor any active bets to check for results
-            await monitor_active_bets(betting_system)
+            # First check for results of active bets
+            await check_results(betting_system)
             
             # Then scan for betting opportunities if no active bets
             if not await betting_system.bet_repository.has_active_bets():
                 await run_betting_cycle(betting_system)
             
-            # Break the long sleep into shorter intervals to check shutdown_event more frequently
-            for _ in range(3):  # 3 one-second intervals (check every 3 seconds)
+            # Wait with periodic checks for shutdown event
+            for _ in range(60):  # 60 one-second intervals
                 if shutdown_event.is_set():
                     break
                 await asyncio.sleep(1)
@@ -216,9 +144,8 @@ async def cleanup(betting_system: BettingSystem):
         # Display final status
         await display_status(betting_system)
         
-        # Close any open connections
-        if hasattr(betting_system.betfair_client, 'close_session'):
-            await betting_system.betfair_client.close_session()
+        # Gracefully shutdown the betting system
+        await betting_system.shutdown()
         
         logging.info("Cleanup completed")
     except Exception as e:
@@ -256,6 +183,11 @@ async def main():
     signal.signal(signal.SIGTERM, handle_shutdown)
     
     try:
+        # Initialize configuration manager
+        print("Initializing configuration manager...")
+        config_manager = ConfigManager()
+        config = config_manager.load_config()
+        
         # Initialize components
         print("Initializing Betfair client...")
         betfair_client = BetfairClient(
@@ -272,17 +204,18 @@ async def main():
         print("Initializing betting ledger...")
         betting_ledger = BettingLedger()
         
-        # Reset account to starting stake (£1) to ensure proper initialization
+        # Reset account to configured starting stake
         print("Resetting account to starting stake...")
-        await account_repository.reset_to_starting_stake()
+        initial_stake = config.get('betting', {}).get('initial_stake', 1.0)
+        await account_repository.reset_to_starting_stake(initial_stake)
         
-        # Initialize system in dry run mode
+        # Initialize system with configuration
         print("Initializing betting system...")
         betting_system = BettingSystem(
             betfair_client=betfair_client,
             bet_repository=bet_repository,
             account_repository=account_repository,
-            dry_run=True  # Enable dry run mode
+            config_manager=config_manager
         )
         
         # Login to Betfair
@@ -296,9 +229,13 @@ async def main():
                 logging.error("Failed to login to Betfair")
                 return
             
-            print("Starting betting system in DRY RUN mode with compound strategy")
-            logging.info("Starting betting system in DRY RUN mode with compound strategy")
-            logging.info("Initial balance: £1.00, Target: £50,000.00")
+            # Get dry run status from config
+            is_dry_run = config.get('system', {}).get('dry_run', True)
+            mode_str = "DRY RUN" if is_dry_run else "LIVE"
+            
+            print(f"Starting betting system in {mode_str} mode with compound strategy")
+            logging.info(f"Starting betting system in {mode_str} mode with compound strategy")
+            logging.info(f"Initial balance: £{initial_stake}, Target: £{config.get('betting', {}).get('target_amount', 50000.0)}")
             
             # Display initial status
             print("Displaying initial status...")

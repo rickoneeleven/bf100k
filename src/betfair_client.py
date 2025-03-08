@@ -1,5 +1,10 @@
 """
-betfair_client.py - Fixed login method handling text/plain response
+betfair_client_enhanced.py
+
+Enhanced Betfair API client with additional capabilities:
+- Real result checking through Betfair API
+- Improved market discovery
+- More robust connection handling
 """
 
 import os
@@ -8,8 +13,8 @@ import logging
 import aiohttp
 import ssl
 import asyncio
-from datetime import datetime, timezone
-from typing import Optional, Dict, List, Tuple
+from datetime import datetime, timezone, timedelta
+from typing import Optional, Dict, List, Tuple, Any
 
 class BetfairClient:
     def __init__(self, app_key: str, cert_file: str, key_file: str):
@@ -161,8 +166,16 @@ class BetfairClient:
             self.logger.error(f"Exception during login: {str(e)}")
             return False
 
-    async def get_football_markets_for_today(self) -> Optional[List[Dict]]:
-        """Get top 5 football Match Odds markets for today, sorted by matched volume"""
+    async def get_football_markets(self, max_results: int = 10) -> Optional[List[Dict]]:
+        """
+        Get football Match Odds markets, sorted by matched volume
+        
+        Args:
+            max_results: Maximum number of markets to return
+            
+        Returns:
+            List of market data or None if error
+        """
         if not self.session_token:
             self.logger.error('No session token available - please login first')
             return None
@@ -170,8 +183,14 @@ class BetfairClient:
         try:
             session = await self.ensure_session()
             
-            today = datetime.now(timezone.utc).strftime('%Y-%m-%dT00:00:00Z')
-            tomorrow = datetime.now(timezone.utc).replace(hour=23, minute=59, second=59).strftime('%Y-%m-%dT%H:%M:%SZ')
+            # Set time window from now to 12 hours in the future
+            now = datetime.now(timezone.utc)
+            future = now + timedelta(hours=12)
+            
+            today = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+            tomorrow = future.strftime('%Y-%m-%dT%H:%M:%SZ')
+            
+            self.logger.info(f"Looking for football markets from {today} to {tomorrow}")
             
             payload = {
                 'jsonrpc': '2.0',
@@ -186,7 +205,7 @@ class BetfairClient:
                         },
                         'inPlayOnly': False
                     },
-                    'maxResults': 5,
+                    'maxResults': max_results,
                     'marketProjection': [
                         'EVENT',
                         'MARKET_START_TIME',
@@ -208,6 +227,7 @@ class BetfairClient:
                 if resp.status == 200:
                     resp_json = await resp.json()
                     if 'result' in resp_json:
+                        self.logger.info(f"Found {len(resp_json['result'])} football markets")
                         return resp_json['result']
                     else:
                         self.logger.error(f'Error in response: {resp_json.get("error")}')
@@ -217,7 +237,7 @@ class BetfairClient:
                     return None
                     
         except Exception as e:
-            self.logger.error(f'Exception during get_football_markets_for_today: {str(e)}')
+            self.logger.error(f'Exception during get_football_markets: {str(e)}')
             return None
 
     async def list_market_book(
@@ -303,13 +323,18 @@ class BetfairClient:
             self.logger.error(f'Exception during list_market_book: {str(e)}')
             return None
 
-    async def get_markets_with_odds(self) -> Tuple[Optional[List[Dict]], Optional[List[Dict]]]:
+    async def get_markets_with_odds(self, max_results: int = 10) -> Tuple[Optional[List[Dict]], Optional[List[Dict]]]:
         """
         Get both market catalogue and price data for top football markets
-        Returns tuple of (market_catalogue, market_books) or (None, None) if error
+        
+        Args:
+            max_results: Maximum number of markets to return
+            
+        Returns:
+            Tuple of (market_catalogue, market_books) or (None, None) if error
         """
         # Get market catalogue data first
-        markets = await self.get_football_markets_for_today()
+        markets = await self.get_football_markets(max_results)
         if not markets:
             return None, None
             
@@ -322,3 +347,165 @@ class BetfairClient:
             return None, None
             
         return markets, market_books
+        
+    async def check_market_status(self, market_id: str) -> Optional[Dict]:
+        """
+        Check current status of a market
+        
+        Args:
+            market_id: Betfair market ID
+            
+        Returns:
+            Market status information or None if error
+        """
+        if not self.session_token:
+            self.logger.error('No session token available - please login first')
+            return None
+            
+        try:
+            session = await self.ensure_session()
+            
+            payload = {
+                'jsonrpc': '2.0',
+                'method': 'SportsAPING/v1.0/listMarketBook',
+                'params': {
+                    'marketIds': [market_id],
+                    'priceProjection': {
+                        'priceData': ['EX_BEST_OFFERS']
+                    }
+                },
+                'id': 1
+            }
+            
+            headers = {
+                'X-Application': self.app_key,
+                'X-Authentication': self.session_token,
+                'content-type': 'application/json'
+            }
+            
+            async with session.post(self.betting_url, json=payload, headers=headers) as resp:
+                if resp.status == 200:
+                    resp_json = await resp.json()
+                    if 'result' in resp_json and resp_json['result']:
+                        market_status = resp_json['result'][0]
+                        self.logger.info(
+                            f"Market {market_id} status: {market_status.get('status')}, "
+                            f"Inplay: {market_status.get('inplay')}"
+                        )
+                        return market_status
+                    else:
+                        error_msg = resp_json.get('error', 'Unknown error')
+                        self.logger.error(f'Error checking market status: {error_msg}')
+                        return None
+                else:
+                    self.logger.error(f'Request failed with status code: {resp.status}')
+                    return None
+                    
+        except Exception as e:
+            self.logger.error(f'Exception during check_market_status: {str(e)}')
+            return None
+            
+    async def check_settled_market(self, market_id: str) -> Optional[Dict]:
+        """
+        Check if a market has been settled and get the results
+        
+        Args:
+            market_id: Betfair market ID
+            
+        Returns:
+            Settlement information or None if error/not settled
+        """
+        if not self.session_token:
+            self.logger.error('No session token available - please login first')
+            return None
+            
+        try:
+            session = await self.ensure_session()
+            
+            # First, check if the market is closed
+            market_status = await self.check_market_status(market_id)
+            if not market_status:
+                self.logger.warning(f"Failed to get market status for {market_id}")
+                return None
+                
+            # Only proceed if market is CLOSED or SETTLED
+            if market_status.get('status') not in ['CLOSED', 'SETTLED']:
+                self.logger.info(
+                    f"Market {market_id} is not yet settled. "
+                    f"Current status: {market_status.get('status')}"
+                )
+                return None
+                
+            # Get market results using listClearedOrders
+            payload = {
+                'jsonrpc': '2.0',
+                'method': 'SportsAPING/v1.0/listClearedOrders',
+                'params': {
+                    'betStatus': 'SETTLED',
+                    'marketIds': [market_id]
+                },
+                'id': 1
+            }
+            
+            headers = {
+                'X-Application': self.app_key,
+                'X-Authentication': self.session_token,
+                'content-type': 'application/json'
+            }
+            
+            async with session.post(self.betting_url, json=payload, headers=headers) as resp:
+                if resp.status == 200:
+                    resp_json = await resp.json()
+                    if 'result' in resp_json:
+                        self.logger.info(f"Got settlement data for market {market_id}")
+                        return resp_json['result']
+                    else:
+                        error_msg = resp_json.get('error', 'Unknown error')
+                        self.logger.error(f'Error checking settled market: {error_msg}')
+                        return None
+                else:
+                    self.logger.error(f'Request failed with status code: {resp.status}')
+                    return None
+                    
+        except Exception as e:
+            self.logger.error(f'Exception during check_settled_market: {str(e)}')
+            return None
+            
+    async def get_market_result(self, market_id: str, selection_id: int) -> Tuple[bool, str]:
+        """
+        Get the result of a specific selection in a market
+        
+        Args:
+            market_id: Betfair market ID
+            selection_id: Selection ID to check
+            
+        Returns:
+            Tuple of (won: bool, status_message: str)
+        """
+        try:
+            # First check market status
+            market_status = await self.check_market_status(market_id)
+            if not market_status:
+                return False, "Could not retrieve market status"
+                
+            # Check if market is settled
+            if market_status.get('status') not in ['CLOSED', 'SETTLED']:
+                return False, f"Market not yet settled. Status: {market_status.get('status')}"
+                
+            # For closed/settled markets, check the winners
+            winners = []
+            for runner in market_status.get('runners', []):
+                if runner.get('status') == 'WINNER':
+                    winners.append(runner.get('selectionId'))
+                    
+            # Check if our selection is a winner
+            if selection_id in winners:
+                self.logger.info(f"Selection {selection_id} won in market {market_id}")
+                return True, "Selection won"
+            else:
+                self.logger.info(f"Selection {selection_id} lost in market {market_id}")
+                return False, "Selection lost"
+                
+        except Exception as e:
+            self.logger.error(f'Exception during get_market_result: {str(e)}')
+            return False, f"Error checking result: {str(e)}"
