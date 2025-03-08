@@ -131,8 +131,15 @@ async def main_loop_with_commands(betting_system: BettingSystem):
             # First check for results of active bets
             await check_results(betting_system)
             
+            # Check if there are active bets
+            has_active_bets = await betting_system.bet_repository.has_active_bets()
+            
+            # Automatically display bet details if there are active bets
+            if has_active_bets:
+                await cmd_processor.cmd_bet_details()
+            
             # Then scan for betting opportunities if no active bets
-            if not await betting_system.bet_repository.has_active_bets():
+            if not has_active_bets:
                 await run_betting_cycle(betting_system)
             
             # Wait with countdown and command processing

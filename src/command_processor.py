@@ -95,8 +95,13 @@ class CommandProcessor:
                 # Get current market data including in-play status and current odds
                 market_info = await self.betting_system.betfair_client.check_market_status(market_id)
                 if market_info:
+                    # Get market start time from market_info which contains the latest data
+                    market_start_time = market_info.get('marketStartTime')
+                    if not market_start_time:
+                        # If not in market_info, try to get it from the bet details
+                        market_start_time = bet.get('market_start_time', 'Unknown')
+                    
                     # Format market start time
-                    market_start_time = bet.get('market_start_time', 'Unknown')
                     if market_start_time and market_start_time != 'Unknown':
                         try:
                             start_dt = datetime.fromisoformat(market_start_time.replace('Z', '+00:00'))
@@ -117,10 +122,10 @@ class CommandProcessor:
                     for runner in runners:
                         selection_id = runner.get('selectionId')
                         # Get team name from mapped selections or from market book
-                        team_name = await self.betting_system.market_analysis.selection_mapper.get_team_name(
+                        team_name = runner.get('runnerName', await self.betting_system.market_analysis.selection_mapper.get_team_name(
                             bet.get('event_id', 'Unknown'),
                             str(selection_id)
-                        ) or "Unknown"
+                        ) or "Unknown")
                         
                         # Mark our selection
                         is_our_selection = selection_id == bet.get('selection_id')

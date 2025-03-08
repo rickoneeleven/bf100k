@@ -140,6 +140,10 @@ class BettingSystem:
             if 'event_name' not in betting_opportunity:
                 self.logger.warning("Missing event_name in betting opportunity. Using placeholder.")
                 betting_opportunity['event_name'] = "Unknown Event"
+            
+            # Ensure market_start_time is included if available
+            if 'market_start_time' not in betting_opportunity and 'marketStartTime' in betting_opportunity:
+                betting_opportunity['market_start_time'] = betting_opportunity['marketStartTime']
                 
             # Record in ledger before placing bet
             await self.betting_ledger.record_bet_placed(betting_opportunity)

@@ -132,6 +132,12 @@ class PlaceBetCommand:
                 self.logger.error(f"Validation failed: {error}")
                 return None
             
+            # Get additional market info to ensure we have the market_start_time
+            market_books = await self.betfair_client.list_market_book([request.market_id])
+            market_start_time = None
+            if market_books and market_books[0]:
+                market_start_time = market_books[0].get('marketStartTime')
+            
             # Get team name for the selection
             team_name = await self.selection_mapper.get_team_name(
                 request.event_id,
@@ -160,6 +166,7 @@ class PlaceBetCommand:
                 "team_name": team_name,  # Include mapped team name
                 "odds": request.odds,
                 "stake": request.stake,
+                "market_start_time": market_start_time,  # Add market start time
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
             

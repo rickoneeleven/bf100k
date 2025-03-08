@@ -135,6 +135,9 @@ class MarketAnalysisCommand:
             selection_id = str(runner.get('selectionId'))
             team_name = runner.get('teamName', 'Unknown Team')
             
+            # Get market start time
+            market_start_time = market.get('marketStartTime')
+            
             # Ensure team name mapping is stored
             await self.selection_mapper.add_mapping(
                 event_id=event_id,
@@ -153,6 +156,7 @@ class MarketAnalysisCommand:
                 "odds": odds,
                 "stake": stake,
                 "available_volume": available_volume,
+                "market_start_time": market_start_time,  # Include market start time
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
