@@ -283,3 +283,40 @@ class BettingLedger:
                 "highest_cycle_reached": 1,
                 "highest_balance": 1.0
             }
+            
+    async def reset_ledger(self, starting_stake: float = 1.0) -> Dict:
+        """
+        Reset the ledger to initial state
+        
+        Args:
+            starting_stake: Initial stake amount for the new cycle
+            
+        Returns:
+            Updated ledger data
+        """
+        try:
+            self.logger.info(f"Resetting betting ledger to initial state with stake: £{starting_stake}")
+            
+            initial_data = {
+                "starting_stake": starting_stake,
+                "current_cycle": 1,
+                "current_bet_in_cycle": 0,
+                "total_cycles": 0,
+                "total_bets": 0,
+                "total_wins": 0,
+                "total_losses": 0,
+                "total_money_lost": 0.0,
+                "highest_cycle_reached": 1,
+                "highest_balance": starting_stake,
+                "cycle_history": [],
+                "last_updated": datetime.now(timezone.utc).isoformat()
+            }
+            
+            await self._save_json(initial_data)
+            self.logger.info("Betting ledger reset successfully")
+            
+            return initial_data
+            
+        except Exception as e:
+            self.logger.error(f"Error resetting ledger: {str(e)}")
+            raise

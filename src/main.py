@@ -1,20 +1,16 @@
 """
-main_improved.py
+main.py
 
-Entry point for the improved betting system. 
-Handles initialization, main operation loop, and graceful shutdown of async components.
-Updates include:
-- Real result integration instead of simulation
-- Improved selection diversity with continuous market checking
-- Configurable parameters
-- More robust error handling and logging
+Entry point for the betting system with command-line interface.
+Handles initialization, interactive command processing, and graceful shutdown.
 """
 
 import os
 import asyncio
 import signal
 import logging
-import random
+import select
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 from datetime import datetime, timezone
@@ -26,6 +22,7 @@ from .repositories.bet_repository import BetRepository
 from .repositories.account_repository import AccountRepository
 from .betting_ledger import BettingLedger
 from .config_manager import ConfigManager
+from .command_processor import CommandProcessor
 
 # Global variable for graceful shutdown
 shutdown_event: Optional[asyncio.Event] = None
@@ -76,43 +73,6 @@ async def check_results(betting_system: BettingSystem):
         logging.error(f"Error checking results: {str(e)}")
         logging.exception(e)
 
-async def main_loop(betting_system: BettingSystem):
-    """Main operation loop with faster shutdown response"""
-    global shutdown_event
-    
-    # Start the result poller in the background
-    await betting_system.start_result_poller()
-    
-    while not shutdown_event.is_set():
-        try:
-            # First check for results of active bets
-            await check_results(betting_system)
-            
-            # Then scan for betting opportunities if no active bets
-            if not await betting_system.bet_repository.has_active_bets():
-                await run_betting_cycle(betting_system)
-            
-            # Wait with periodic checks for shutdown event
-            for _ in range(60):  # 60 one-second intervals
-                if shutdown_event.is_set():
-                    break
-                await asyncio.sleep(1)
-                
-        except Exception as e:
-            logging.error(f"Error in main loop: {str(e)}")
-            logging.exception(e)
-            # Shorter error retry interval
-            for _ in range(5):  # 5 one-second intervals
-                if shutdown_event.is_set():
-                    break
-                await asyncio.sleep(1)
-
-def handle_shutdown(signum, frame):
-    """Handle shutdown signals"""
-    logging.info("Shutdown signal received")
-    if shutdown_event:
-        shutdown_event.set()
-
 async def display_status(betting_system: BettingSystem):
     """Display current system status"""
     try:
@@ -121,6 +81,21 @@ async def display_status(betting_system: BettingSystem):
         ledger = await betting_system.get_ledger_info()
         
         # Display summary
+        print("\n" + "="*60)
+        print("BETTING SYSTEM STATUS SUMMARY")
+        print("="*60)
+        print(f"Current Cycle: #{status['current_cycle']}")
+        print(f"Current Bet in Cycle: #{status['current_bet_in_cycle']}")
+        print(f"Current Balance: £{status['current_balance']:.2f}")
+        print(f"Target Amount: £{status['target_amount']:.2f}")
+        print(f"Total Cycles Completed: {status['total_cycles']}")
+        print(f"Total Bets Placed: {status['total_bets_placed']}")
+        print(f"Successful Bets: {status['successful_bets']}")
+        print(f"Win Rate: {status['win_rate']:.1f}%")
+        print(f"Total Money Lost: £{status['total_money_lost']:.2f}")
+        print(f"Highest Balance Reached: £{ledger['highest_balance']:.2f}")
+        print("="*60 + "\n")
+        
         logging.info("\n" + "="*60)
         logging.info("BETTING SYSTEM STATUS SUMMARY")
         logging.info("="*60)
@@ -138,6 +113,75 @@ async def display_status(betting_system: BettingSystem):
     except Exception as e:
         logging.error(f"Error displaying status: {str(e)}")
 
+async def main_loop_with_commands(betting_system: BettingSystem):
+    """Main operation loop with command processing and countdown timer"""
+    global shutdown_event
+    
+    # Initialize command processor
+    cmd_processor = CommandProcessor(betting_system)
+    
+    # Start the result poller in the background
+    await betting_system.start_result_poller()
+    
+    # Show available commands
+    await cmd_processor.cmd_help()
+    
+    while not shutdown_event.is_set() and not cmd_processor.should_exit:
+        try:
+            # First check for results of active bets
+            await check_results(betting_system)
+            
+            # Then scan for betting opportunities if no active bets
+            if not await betting_system.bet_repository.has_active_bets():
+                await run_betting_cycle(betting_system)
+            
+            # Wait with countdown and command processing
+            wait_seconds = 60  # Default wait time
+            
+            print(f"\nWaiting {wait_seconds} seconds before next cycle...")
+            print("Enter commands during this time. Type 'help' for available commands.")
+            
+            # Process commands during wait period
+            for remaining in range(wait_seconds, 0, -1):
+                if shutdown_event.is_set() or cmd_processor.should_exit:
+                    break
+                    
+                # Display countdown
+                cmd_processor.print_countdown(remaining)
+                
+                # Check for input with timeout (non-blocking)
+                ready_to_read, _, _ = select.select([sys.stdin], [], [], 0.1)
+                
+                if ready_to_read:
+                    command = sys.stdin.readline().strip()
+                    print()  # New line after input
+                    
+                    if command:
+                        await cmd_processor.process_command(command)
+                    else:
+                        # Empty input (just Enter) shows status
+                        await cmd_processor.cmd_status()
+                
+                # Sleep briefly to prevent CPU spinning
+                await asyncio.sleep(0.9)
+                
+        except Exception as e:
+            logging.error(f"Error in main loop: {str(e)}")
+            logging.exception(e)
+            # Shorter error retry interval
+            await asyncio.sleep(5)
+    
+    # Perform cleanup before exit
+    if cmd_processor.should_exit:
+        logging.info("Command exit requested")
+        await cleanup(betting_system)
+
+def handle_shutdown(signum, frame):
+    """Handle shutdown signals"""
+    logging.info("Shutdown signal received")
+    if shutdown_event:
+        shutdown_event.set()
+
 async def cleanup(betting_system: BettingSystem):
     """Perform cleanup operations"""
     try:
@@ -148,6 +192,7 @@ async def cleanup(betting_system: BettingSystem):
         await betting_system.shutdown()
         
         logging.info("Cleanup completed")
+        print("System shutdown complete. Goodbye!")
     except Exception as e:
         logging.error(f"Error during cleanup: {str(e)}")
         logging.exception(e)
@@ -242,9 +287,9 @@ async def main():
             await display_status(betting_system)
             
             try:
-                # Run main loop
-                print("Starting main loop...")
-                await main_loop(betting_system)
+                # Run main loop with command processing
+                print("Starting main loop with command interface...")
+                await main_loop_with_commands(betting_system)
             except asyncio.CancelledError:
                 print("Main loop cancelled")
                 logging.info("Main loop cancelled")
@@ -266,7 +311,7 @@ async def main():
         print("Main function completed.")
         
 if __name__ == "__main__":
-    print("Starting Betfair Compound Betting System...")
+    print("Starting Betfair Compound Betting System with Command Interface...")
     try:
         print("Initializing asyncio event loop...")
         asyncio.run(main())

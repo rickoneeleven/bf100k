@@ -369,3 +369,37 @@ class BettingSystem:
     async def get_ledger_info(self) -> Dict:
         """Get comprehensive ledger information"""
         return await self.betting_ledger.get_ledger()
+        
+        
+    async def reset_system(self, initial_stake: float = 1.0) -> None:
+        """
+        Reset the entire betting system to start fresh
+        
+        Args:
+            initial_stake: Initial stake amount for the new cycle
+        """
+        try:
+            self.logger.info(f"Resetting entire betting system with initial stake: £{initial_stake}")
+            
+            # Reset account to starting stake
+            await self.account_repository.reset_to_starting_stake(initial_stake)
+            
+            # Reset the betting ledger
+            await self.betting_ledger.reset_ledger(initial_stake)
+            
+            # Clear any active bets
+            active_bets = await self.bet_repository.get_active_bets()
+            for bet in active_bets:
+                # Force settle any active bets as losses
+                await self.settle_bet_order(
+                    bet["market_id"], 
+                    forced_settlement=True,
+                    force_won=False
+                )
+            
+            self.logger.info("Betting system reset complete")
+        
+        except Exception as e:
+            self.logger.error(f"Error during system reset: {str(e)}")
+            self.logger.exception(e)
+            raise
