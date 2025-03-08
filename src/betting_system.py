@@ -406,3 +406,43 @@ class BettingSystem:
             self.logger.error(f"Error during system reset: {str(e)}")
             self.logger.exception(e)
             raise
+            
+            
+
+    async def get_active_bet_details(self) -> List[Dict]:
+        """
+        Get detailed information about all active bets including current market odds
+        
+        Returns:
+            List of enhanced bet details with current market information
+        """
+        try:
+            # Get basic active bets
+            active_bets = await self.bet_repository.get_active_bets()
+            
+            if not active_bets:
+                return []
+                
+            enhanced_bets = []
+            
+            # Enhance each bet with current market information
+            for bet in active_bets:
+                market_id = bet.get("market_id")
+                
+                # Get current market status
+                market_info = await self.betfair_client.check_market_status(market_id)
+                
+                if market_info:
+                    # Merge bet data with market data
+                    enhanced_bet = {**bet, "current_market": market_info}
+                    enhanced_bets.append(enhanced_bet)
+                else:
+                    # Include original bet if can't get current market status
+                    enhanced_bets.append(bet)
+                    
+            return enhanced_bets
+            
+        except Exception as e:
+            self.logger.error(f"Error getting active bet details: {str(e)}")
+            self.logger.exception(e)
+            return []

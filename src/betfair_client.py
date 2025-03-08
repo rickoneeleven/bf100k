@@ -350,13 +350,13 @@ class BetfairClient:
         
     async def check_market_status(self, market_id: str) -> Optional[Dict]:
         """
-        Check current status of a market
+        Check current status of a market with enhanced data
         
         Args:
             market_id: Betfair market ID
             
         Returns:
-            Market status information or None if error
+            Enhanced market status information or None if error
         """
         if not self.session_token:
             self.logger.error('No session token available - please login first')
@@ -365,14 +365,21 @@ class BetfairClient:
         try:
             session = await self.ensure_session()
             
-            payload = {
+            # Get market catalogue data first for event details and start time
+            catalogue_payload = {
                 'jsonrpc': '2.0',
-                'method': 'SportsAPING/v1.0/listMarketBook',
+                'method': 'SportsAPING/v1.0/listMarketCatalogue',
                 'params': {
-                    'marketIds': [market_id],
-                    'priceProjection': {
-                        'priceData': ['EX_BEST_OFFERS']
-                    }
+                    'filter': {
+                        'marketIds': [market_id]
+                    },
+                    'maxResults': 1,
+                    'marketProjection': [
+                        'EVENT',
+                        'COMPETITION',
+                        'MARKET_START_TIME',
+                        'RUNNER_DESCRIPTION'
+                    ]
                 },
                 'id': 1
             }
@@ -383,16 +390,63 @@ class BetfairClient:
                 'content-type': 'application/json'
             }
             
-            async with session.post(self.betting_url, json=payload, headers=headers) as resp:
+            # Get market catalogue data
+            catalogue_data = None
+            async with session.post(self.betting_url, json=catalogue_payload, headers=headers) as resp:
                 if resp.status == 200:
                     resp_json = await resp.json()
                     if 'result' in resp_json and resp_json['result']:
-                        market_status = resp_json['result'][0]
+                        catalogue_data = resp_json['result'][0]
+            
+            # Now get market book data with prices
+            book_payload = {
+                'jsonrpc': '2.0',
+                'method': 'SportsAPING/v1.0/listMarketBook',
+                'params': {
+                    'marketIds': [market_id],
+                    'priceProjection': {
+                        'priceData': ['EX_BEST_OFFERS'],
+                        'exBestOffersOverrides': {
+                            'bestPricesDepth': 3
+                        }
+                    }
+                },
+                'id': 1
+            }
+            
+            # Get market price data
+            market_book = None
+            async with session.post(self.betting_url, json=book_payload, headers=headers) as resp:
+                if resp.status == 200:
+                    resp_json = await resp.json()
+                    if 'result' in resp_json and resp_json['result']:
+                        market_book = resp_json['result'][0]
+                        
+                        # If we have catalogue data, merge it with market book
+                        if catalogue_data:
+                            # Add event and competition details
+                            market_book['event'] = catalogue_data.get('event', {})
+                            market_book['competition'] = catalogue_data.get('competition', {})
+                            market_book['marketName'] = catalogue_data.get('marketName', 'Unknown Market')
+                            market_book['marketStartTime'] = catalogue_data.get('marketStartTime')
+                            
+                            # Map runner names from catalogue
+                            runner_map = {
+                                r['selectionId']: r.get('runnerName', 'Unknown') 
+                                for r in catalogue_data.get('runners', [])
+                            }
+                            
+                            # Update runner names
+                            for runner in market_book.get('runners', []):
+                                selection_id = runner.get('selectionId')
+                                if selection_id in runner_map:
+                                    runner['runnerName'] = runner_map[selection_id]
+                        
                         self.logger.info(
-                            f"Market {market_id} status: {market_status.get('status')}, "
-                            f"Inplay: {market_status.get('inplay')}"
+                            f"Market {market_id} status: {market_book.get('status')}, "
+                            f"Inplay: {market_book.get('inplay')}"
                         )
-                        return market_status
+                        return market_book
                     else:
                         error_msg = resp_json.get('error', 'Unknown error')
                         self.logger.error(f'Error checking market status: {error_msg}')
@@ -403,6 +457,7 @@ class BetfairClient:
                     
         except Exception as e:
             self.logger.error(f'Exception during check_market_status: {str(e)}')
+            self.logger.exception(e)
             return None
             
     async def check_settled_market(self, market_id: str) -> Optional[Dict]:

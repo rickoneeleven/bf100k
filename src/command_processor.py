@@ -20,6 +20,7 @@ class CommandProcessor:
             "help": self.cmd_help,
             "status": self.cmd_status,
             "reset": self.cmd_reset,
+            "bet": self.cmd_bet_details,  # New command for detailed bet info
             "quit": self.cmd_quit,
             "exit": self.cmd_quit
         }
@@ -40,6 +41,7 @@ class CommandProcessor:
         print("\n=== Available Commands ===")
         print("help       - Show this help message")
         print("status     - Show current betting system status")
+        print("bet        - Show detailed information about active bets")
         print("reset      - Reset the betting ledger and start fresh")
         print("quit/exit  - Exit the application")
         print("========================\n")
@@ -69,6 +71,81 @@ class CommandProcessor:
         except Exception as e:
             print(f"Error displaying status: {str(e)}")
             self.logger.error(f"Error displaying status: {str(e)}")
+    
+    async def cmd_bet_details(self, args: List[str] = None) -> None:
+        """Display detailed information about active bets"""
+        try:
+            active_bets = await self.betting_system.get_active_bets()
+            
+            if not active_bets:
+                print("\nNo active bets currently placed.")
+                return
+                
+            print("\n" + "="*75)
+            print("ACTIVE BET DETAILS")
+            print("="*75)
+            
+            for bet in active_bets:
+                market_id = bet.get("market_id")
+                print(f"Market ID: {market_id}")
+                print(f"Event: {bet.get('event_name', 'Unknown Event')}")
+                print(f"Selection: {bet.get('team_name', 'Unknown')} @ {bet.get('odds', 0.0)}")
+                print(f"Stake: £{bet.get('stake', 0.0):.2f}")
+                
+                # Get current market data including in-play status and current odds
+                market_info = await self.betting_system.betfair_client.check_market_status(market_id)
+                if market_info:
+                    # Format market start time
+                    market_start_time = bet.get('market_start_time', 'Unknown')
+                    if market_start_time and market_start_time != 'Unknown':
+                        try:
+                            start_dt = datetime.fromisoformat(market_start_time.replace('Z', '+00:00'))
+                            formatted_time = start_dt.strftime('%Y-%m-%d %H:%M:%S')
+                            print(f"Kickoff Time: {formatted_time}")
+                        except:
+                            print(f"Kickoff Time: {market_start_time}")
+                    else:
+                        print("Kickoff Time: Unknown")
+                    
+                    # Show in-play status
+                    is_inplay = market_info.get('inplay', False)
+                    print(f"In Play: {'Yes' if is_inplay else 'No'}")
+                    
+                    # Get current market prices for all selections
+                    print("\nCurrent Market Odds:")
+                    runners = market_info.get('runners', [])
+                    for runner in runners:
+                        selection_id = runner.get('selectionId')
+                        # Get team name from mapped selections or from market book
+                        team_name = await self.betting_system.market_analysis.selection_mapper.get_team_name(
+                            bet.get('event_id', 'Unknown'),
+                            str(selection_id)
+                        ) or "Unknown"
+                        
+                        # Mark our selection
+                        is_our_selection = selection_id == bet.get('selection_id')
+                        selection_marker = " ← OUR BET" if is_our_selection else ""
+                        
+                        # Get current best back price
+                        back_prices = runner.get('ex', {}).get('availableToBack', [])
+                        current_odds = back_prices[0].get('price', 0.0) if back_prices else 0.0
+                        
+                        # Show detailed odds information
+                        print(f"  {team_name}: {current_odds}{selection_marker}")
+                        
+                        # If this is our selection, compare current odds with backed odds
+                        if is_our_selection and current_odds > 0:
+                            backed_odds = bet.get('odds', 0.0)
+                            odds_delta = current_odds - backed_odds
+                            direction = "higher" if odds_delta > 0 else "lower"
+                            print(f"  Odds Trend: {abs(odds_delta):.2f} {direction} than when backed")
+                
+                print("="*75 + "\n")
+                
+        except Exception as e:
+            print(f"Error retrieving bet details: {str(e)}")
+            self.logger.error(f"Error retrieving bet details: {str(e)}")
+            self.logger.exception(e)
     
     async def cmd_reset(self, args: List[str] = None) -> None:
         """Reset the betting ledger and system"""
