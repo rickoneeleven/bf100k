@@ -64,7 +64,7 @@ class BetSettlementCommand:
             if request.won:
                 expected_profit = bet["stake"] * (bet["odds"] - 1)
                 if abs(request.profit - expected_profit) > 0.01:  # Allow for small rounding differences
-                    return False, f"Invalid profit amount. Expected: Â£{expected_profit}, Got: Â£{request.profit}"
+                    return False, f"Invalid profit amount. Expected: £{expected_profit}, Got: £{request.profit}"
                     
             return True, ""
         except Exception as e:
@@ -129,7 +129,7 @@ class BetSettlementCommand:
                 self.logger.info(
                     f"Successfully settled bet: Market ID {request.market_id}, "
                     f"Team: {bet_details.get('team_name', 'Unknown')}, "
-                    f"Won: {request.won}, Profit: Â£{request.profit}"
+                    f"Won: {request.won}, Profit: £{request.profit}"
                 )
                 
                 # Get and return updated bet details

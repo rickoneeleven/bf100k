@@ -102,7 +102,7 @@ class MarketAnalysisCommand:
                 
                 # Add to runner details
                 runner_details.append(
-                    f"{team_name} (Win: {back_price} / Available: Â£{back_size} / selectionID: {selection_id})"
+                    f"{team_name} (Win: {back_price} / Available: £{back_size} / selectionID: {selection_id})"
                 )
             
             # Log the full market details

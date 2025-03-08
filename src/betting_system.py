@@ -65,7 +65,7 @@ class BettingSystem:
             # Get current balance and calculate required liquidity
             account_status = await self.account_repository.get_account_status()
             required_liquidity = account_status.current_balance * 1.1
-            self.logger.info(f"Required Liquidity: Â£{required_liquidity:.2f}\n")
+            self.logger.info(f"Required Liquidity: £{required_liquidity:.2f}\n")
             
             async with self.betfair_client as client:
                 markets, market_books = await client.get_markets_with_odds()
@@ -98,8 +98,8 @@ class BettingSystem:
                             f"Selection: {betting_opportunity['team_name']}\n"
                             f"Selection ID: {betting_opportunity['selection_id']}\n"
                             f"Odds: {betting_opportunity['odds']}\n"
-                            f"Stake: Â£{betting_opportunity['stake']}\n"
-                            f"Available Volume: Â£{betting_opportunity['available_volume']}"
+                            f"Stake: £{betting_opportunity['stake']}\n"
+                            f"Available Volume: £{betting_opportunity['available_volume']}"
                         )
                     return betting_opportunity
 
@@ -142,7 +142,7 @@ class BettingSystem:
                     f"Successfully placed bet:\n"
                     f"Match: {betting_opportunity['event_name']}\n"
                     f"Selection: {betting_opportunity['team_name']}\n"
-                    f"Stake: Â£{request.stake}\n"
+                    f"Stake: £{request.stake}\n"
                     f"Odds: {request.odds}"
                 )
             return bet_details
@@ -171,7 +171,7 @@ class BettingSystem:
                     f"Match: {settled_bet.get('event_name', 'Unknown Event')}\n"
                     f"Selection: {settled_bet.get('team_name', 'Unknown Team')}\n"
                     f"Won: {won}\n"
-                    f"Profit: Â£{profit}"
+                    f"Profit: £{profit}"
                 )
             return settled_bet
                 

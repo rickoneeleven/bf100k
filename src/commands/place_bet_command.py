@@ -169,7 +169,7 @@ class PlaceBetCommand:
             
             self.logger.info(
                 f"Successfully placed bet: Market ID {request.market_id}, "
-                f"Selection: {team_name}, Stake Â£{request.stake}, Odds: {request.odds}"
+                f"Selection: {team_name}, Stake £{request.stake}, Odds: {request.odds}"
             )
             
             return bet_details
