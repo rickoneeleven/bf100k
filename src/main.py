@@ -3,8 +3,7 @@ main.py
 
 Entry point for the betting system with command-line interface.
 Handles initialization, interactive command processing, and graceful shutdown.
-Enhanced with improved signal handling and cleanup procedures.
-Updated to support Betfair commission and compound betting strategy.
+UPDATED: Removed automatic ledger reset to support compound betting strategy.
 """
 
 import os
@@ -45,7 +44,7 @@ async def run_betting_cycle(betting_system: BettingSystem):
         logging.info(
             f"Running betting cycle - Cycle: {cycle_info['current_cycle']}, "
             f"Bet in cycle: {cycle_info['current_bet_in_cycle'] + 1}, "
-            f"Next stake: £{next_stake:.2f} (compound strategy)"
+            f"Next stake: Â£{next_stake:.2f} (compound strategy)"
         )
             
         # Scan for opportunities
@@ -59,8 +58,8 @@ async def run_betting_cycle(betting_system: BettingSystem):
                 logging.info(
                     f"Bet placed - Cycle #{account_status['current_cycle']}, "
                     f"Bet #{account_status['current_bet_in_cycle']} in cycle, "
-                    f"Balance: £{account_status['current_balance']:.2f}, "
-                    f"Stake: £{bet['stake']:.2f}"
+                    f"Balance: Â£{account_status['current_balance']:.2f}, "
+                    f"Stake: Â£{bet['stake']:.2f}"
                 )
     except Exception as e:
         logging.error(f"Error in betting cycle: {str(e)}")
@@ -81,10 +80,10 @@ async def check_results(betting_system: BettingSystem):
             
             logging.info(
                 f"Updated status - Cycle: {status['current_cycle']}, "
-                f"Balance: £{status['current_balance']:.2f}, "
+                f"Balance: Â£{status['current_balance']:.2f}, "
                 f"Total cycles: {status['total_cycles']}, "
-                f"Total money lost: £{status['total_money_lost']:.2f}, "
-                f"Total commission paid: £{ledger.get('total_commission_paid', 0.0):.2f}"
+                f"Total money lost: Â£{status['total_money_lost']:.2f}, "
+                f"Total commission paid: Â£{ledger.get('total_commission_paid', 0.0):.2f}"
             )
     except Exception as e:
         logging.error(f"Error checking results: {str(e)}")
@@ -106,16 +105,16 @@ async def display_status(betting_system: BettingSystem):
         print("="*60)
         print(f"Current Cycle: #{status['current_cycle']}")
         print(f"Current Bet in Cycle: #{status['current_bet_in_cycle']}")
-        print(f"Current Balance: £{status['current_balance']:.2f}")
-        print(f"Next Bet Stake: £{next_stake:.2f}")
-        print(f"Target Amount: £{status['target_amount']:.2f}")
+        print(f"Current Balance: Â£{status['current_balance']:.2f}")
+        print(f"Next Bet Stake: Â£{next_stake:.2f}")
+        print(f"Target Amount: Â£{status['target_amount']:.2f}")
         print(f"Total Cycles Completed: {status['total_cycles']}")
         print(f"Total Bets Placed: {status['total_bets_placed']}")
         print(f"Successful Bets: {status['successful_bets']}")
         print(f"Win Rate: {status['win_rate']:.1f}%")
-        print(f"Total Money Lost: £{status['total_money_lost']:.2f}")
-        print(f"Total Commission Paid: £{ledger.get('total_commission_paid', 0.0):.2f}")
-        print(f"Highest Balance Reached: £{ledger['highest_balance']:.2f}")
+        print(f"Total Money Lost: Â£{status['total_money_lost']:.2f}")
+        print(f"Total Commission Paid: Â£{ledger.get('total_commission_paid', 0.0):.2f}")
+        print(f"Highest Balance Reached: Â£{ledger['highest_balance']:.2f}")
         print("="*60 + "\n")
         
         logging.info("\n" + "="*60)
@@ -123,16 +122,16 @@ async def display_status(betting_system: BettingSystem):
         logging.info("="*60)
         logging.info(f"Current Cycle: #{status['current_cycle']}")
         logging.info(f"Current Bet in Cycle: #{status['current_bet_in_cycle']}")
-        logging.info(f"Current Balance: £{status['current_balance']:.2f}")
-        logging.info(f"Next Bet Stake: £{next_stake:.2f}")
-        logging.info(f"Target Amount: £{status['target_amount']:.2f}")
+        logging.info(f"Current Balance: Â£{status['current_balance']:.2f}")
+        logging.info(f"Next Bet Stake: Â£{next_stake:.2f}")
+        logging.info(f"Target Amount: Â£{status['target_amount']:.2f}")
         logging.info(f"Total Cycles Completed: {status['total_cycles']}")
         logging.info(f"Total Bets Placed: {status['total_bets_placed']}")
         logging.info(f"Successful Bets: {status['successful_bets']}")
         logging.info(f"Win Rate: {status['win_rate']:.1f}%")
-        logging.info(f"Total Money Lost: £{status['total_money_lost']:.2f}")
-        logging.info(f"Total Commission Paid: £{ledger.get('total_commission_paid', 0.0):.2f}")
-        logging.info(f"Highest Balance Reached: £{ledger['highest_balance']:.2f}")
+        logging.info(f"Total Money Lost: Â£{status['total_money_lost']:.2f}")
+        logging.info(f"Total Commission Paid: Â£{ledger.get('total_commission_paid', 0.0):.2f}")
+        logging.info(f"Highest Balance Reached: Â£{ledger['highest_balance']:.2f}")
         logging.info("="*60 + "\n")
     except Exception as e:
         logging.error(f"Error displaying status: {str(e)}")
@@ -317,21 +316,28 @@ async def main():
         print("Initializing betting ledger...")
         betting_ledger = BettingLedger()
         
-        # Reset account to configured starting stake
+        # Reset account balance but not the ledger (preserves compound betting data)
         print("Resetting account to starting stake...")
         initial_stake = config.get('betting', {}).get('initial_stake', 1.0)
         await account_repository.reset_to_starting_stake(initial_stake)
         
-        # Add this code to also reset the betting ledger
-        print("Resetting betting ledger to configured starting stake...")
-        await betting_ledger.reset_ledger(initial_stake)
-        
-        # After resetting both components
-        account_status = await account_repository.get_account_status()
+        # Get current ledger info to check if we should use compound strategy
         ledger_info = await betting_ledger.get_ledger()
+        has_previous_profit = ledger_info.get('last_winning_profit', 0.0) > 0
+        
+        if has_previous_profit:
+            print(f"Found previous winning profit: £{ledger_info['last_winning_profit']:.2f}")
+            print("Using compound betting strategy with previous profit as next stake")
+        else:
+            print(f"No previous profit found, using initial stake: £{initial_stake}")
+        
+        # After initialization
+        account_status = await account_repository.get_account_status()
         print(f"DEBUG - Account balance: £{account_status.current_balance}")
         print(f"DEBUG - Ledger starting stake: £{ledger_info['starting_stake']}")
         print(f"DEBUG - Ledger highest balance: £{ledger_info['highest_balance']}")
+        if has_previous_profit:
+            print(f"DEBUG - Last winning profit: £{ledger_info['last_winning_profit']}")
         
         # Initialize system with configuration
         print("Initializing betting system...")

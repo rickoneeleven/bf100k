@@ -355,20 +355,18 @@ class BettingLedger:
         try:
             ledger = await self._load_json()
             
-            # If this is the first bet in a cycle, use the initial stake
-            if ledger["current_bet_in_cycle"] == 0:
-                self.logger.info(f"First bet in cycle - using initial stake: £{ledger['starting_stake']}")
-                return ledger["starting_stake"]
-                
-            # Otherwise, use the profit from the last winning bet
-            # If there's no recorded profit (e.g., after a reset), use initial stake
-            next_stake = ledger.get("last_winning_profit", 0.0)
-            if next_stake <= 0:
-                next_stake = ledger["starting_stake"]
-                
-            self.logger.info(f"Next stake calculated as £{next_stake} based on compound strategy (last_winning_profit)")
+            # Check if we have a previous winning profit to use
+            last_winning_profit = ledger.get("last_winning_profit", 0.0)
             
-            return next_stake
+            if last_winning_profit > 0:
+                # We have a previous winning profit, use it regardless of bet cycle
+                self.logger.info(f"Next stake calculated as £{last_winning_profit:.2f} based on compound strategy (last_winning_profit)")
+                return last_winning_profit
+                    
+            # Otherwise, use the initial stake
+            initial_stake = ledger["starting_stake"]
+            self.logger.info(f"Using initial stake: £{initial_stake:.2f} (no previous winning profit)")
+            return initial_stake
         
         except Exception as e:
             self.logger.error(f"Error getting next stake: {str(e)}")
