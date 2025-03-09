@@ -4,6 +4,7 @@ account_repository.py
 Repository pattern implementation for account data management.
 Handles storage and retrieval of account status and balance.
 Enhanced to track commission amounts and support compound betting.
+Fixed AccountStatus dataclass to include total_commission_paid field.
 """
 
 import json
@@ -23,6 +24,7 @@ class AccountStatus:
     total_bets_placed: int
     successful_bets: int
     last_updated: str
+    total_commission_paid: float = 0.0  # Added with default value to fix error
 
 class AccountRepository:
     def __init__(self, data_dir: str = 'web/data/betting'):
@@ -119,7 +121,8 @@ class AccountRepository:
                 target_amount=50000.0,
                 total_bets_placed=0,
                 successful_bets=0,
-                last_updated=datetime.now(timezone.utc).isoformat()
+                last_updated=datetime.now(timezone.utc).isoformat(),
+                total_commission_paid=0.0
             )
 
     async def update_balance(self, amount_change: float, description: str = "Balance update") -> None:
