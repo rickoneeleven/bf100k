@@ -91,15 +91,20 @@ class SelectionMapper:
             for event_id, event_mappings in current_mappings.items():
                 updated_event_mappings = {}
                 for selection_id, mapping_data in event_mappings.items():
-                    if datetime.fromisoformat(mapping_data["created_at"]) > cutoff_date:
-                        updated_event_mappings[selection_id] = mapping_data
+                    # Add validation to check if mapping_data is a dictionary
+                    if isinstance(mapping_data, dict) and "created_at" in mapping_data:
+                        if datetime.fromisoformat(mapping_data["created_at"]) > cutoff_date:
+                            updated_event_mappings[selection_id] = mapping_data
+                    else:
+                        # Skip invalid mapping data
+                        self.logger.warning(f"Skipping invalid mapping data for {event_id}/{selection_id}")
                 
                 if updated_event_mappings:
                     updated_mappings[event_id] = updated_event_mappings
             
             # Update data with cleaned mappings
             data["mappings"] = updated_mappings
-            data["last_cleanup"] = datetime.now(timezone.utc).isoformat()
+            data["last_updated"] = datetime.now(timezone.utc).isoformat()
             
             return data
             
