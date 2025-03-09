@@ -16,6 +16,7 @@ from ..repositories.bet_repository import BetRepository
 from ..repositories.account_repository import AccountRepository
 from ..betfair_client import BetfairClient
 from ..selection_mapper import SelectionMapper
+from ..betting_ledger import BettingLedger
 
 @dataclass
 class PlaceBetRequest:
@@ -38,6 +39,7 @@ class PlaceBetCommand:
         self.bet_repository = bet_repository
         self.account_repository = account_repository
         self.selection_mapper = SelectionMapper()
+        self.betting_ledger = BettingLedger()  # Add the betting ledger to access cycle info
         
         # Setup logging
         self.logger = logging.getLogger('PlaceBetCommand')
@@ -209,8 +211,11 @@ class PlaceBetCommand:
                     if runner.get('selectionId') == request.selection_id:
                         sort_priority = runner.get('sortPriority', 999)
                         break
-                
-            # Create bet record with enhanced details
+            
+            # Get cycle information from betting ledger
+            cycle_info = await self.betting_ledger.get_current_cycle_info()
+            
+            # Create bet record with enhanced details including cycle information
             bet_details = {
                 "market_id": request.market_id,
                 "event_id": request.event_id,
@@ -221,6 +226,8 @@ class PlaceBetCommand:
                 "odds": request.odds,
                 "stake": request.stake,
                 "market_start_time": market_start_time,
+                "cycle_number": cycle_info["current_cycle"],
+                "bet_in_cycle": cycle_info["current_bet_in_cycle"] + 1,  # Will be incremented when recorded
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
@@ -231,7 +238,8 @@ class PlaceBetCommand:
             self.logger.info(
                 f"Successfully placed bet: Market ID {request.market_id}, "
                 f"Selection: {team_name} (ID: {request.selection_id}, Priority: {sort_priority}), "
-                f"Stake Â£{request.stake}, Odds: {request.odds}"
+                f"Stake £{request.stake}, Odds: {request.odds}, "
+                f"Cycle #{cycle_info['current_cycle']}, Bet #{cycle_info['current_bet_in_cycle'] + 1} in cycle"
             )
             
             return bet_details

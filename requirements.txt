@@ -16,3 +16,5 @@ pyOpenSSL>=24.0.0
 
 # File operations
 filelock>=3.13.1
+
+rich

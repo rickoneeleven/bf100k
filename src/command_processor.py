@@ -14,6 +14,11 @@ import sys
 import os
 import time
 from datetime import datetime
+from rich import print as rprint
+from rich.console import Console
+from rich.text import Text
+
+console = Console()
 
 class CommandProcessor:
     def __init__(self, betting_system):
@@ -63,6 +68,9 @@ class CommandProcessor:
             status = await self.betting_system.get_account_status()
             ledger = await self.betting_system.get_ledger_info()
             
+            # Get next stake calculation based on compound strategy
+            next_stake = await self.betting_system.betting_ledger.get_next_stake()
+            
             # Display summary
             print("\n" + "="*60)
             print("BETTING SYSTEM STATUS SUMMARY")
@@ -70,6 +78,13 @@ class CommandProcessor:
             print(f"Current Cycle: #{status['current_cycle']}")
             print(f"Current Bet in Cycle: #{status['current_bet_in_cycle']}")
             print(f"Current Balance: £{status['current_balance']:.2f}")
+            
+            # Highlight the next stake with visual indicator
+            if ledger.get('last_winning_profit', 0.0) > 0:
+                print(f"Next Bet Stake: £{next_stake:.2f} (Compound: Previous Win Profit)")
+            else:
+                print(f"Next Bet Stake: £{next_stake:.2f} (Starting Stake)")
+                
             print(f"Target Amount: £{status['target_amount']:.2f}")
             print(f"Total Cycles Completed: {status['total_cycles']}")
             print(f"Total Bets Placed: {status['total_bets_placed']}")
@@ -79,9 +94,9 @@ class CommandProcessor:
             print(f"Total Commission Paid: £{ledger.get('total_commission_paid', 0.0):.2f}")
             print(f"Highest Balance Reached: £{ledger['highest_balance']:.2f}")
             
-            # Get next stake calculation based on compound strategy
-            next_stake = await self.betting_system.betting_ledger.get_next_stake()
-            print(f"Next Bet Stake: £{next_stake:.2f} (Compound Strategy)")
+            # Show previous winning profit (for transparency)
+            if ledger.get('last_winning_profit', 0.0) > 0:
+                print(f"Last Winning Profit: £{ledger.get('last_winning_profit', 0.0):.2f}")
             
             # Show current configuration
             config = self.betting_system.config_manager.get_config()
@@ -120,6 +135,13 @@ class CommandProcessor:
                 selection_id = bet.get('selection_id')
                 team_name = bet.get('team_name', 'Unknown')
                 odds = bet.get('odds', 0.0)
+                
+                # Get cycle and bet number information
+                cycle_number = bet.get('cycle_number', '?')
+                bet_in_cycle = bet.get('bet_in_cycle', '?')
+                
+                # Display cycle information
+                print(f"Cycle #{cycle_number}, Bet #{bet_in_cycle} in cycle")
                 
                 print(f"Selection: {team_name} @ {odds}")
                 print(f"Selection ID: {selection_id}")  # Display selection ID for debugging
@@ -181,7 +203,15 @@ class CommandProcessor:
                             odds_delta = current_odds - backed_odds
                             direction = "higher" if odds_delta > 0 else "lower"
                             percent_change = (abs(odds_delta) / backed_odds) * 100
-                            print(f"  Odds Trend: {abs(odds_delta):.2f} {direction} than when backed ({percent_change:.1f}% change)")
+                            
+                            # Use colored text for odds trend
+                            if direction == "lower":
+                                # Green for lower odds (our bet is more likely to win)
+                                odds_text = Text(f"  Odds Trend: {abs(odds_delta):.2f} {direction} than when backed ({percent_change:.1f}% change)")
+                                odds_text.stylize("bold green")
+                                console.print(odds_text)
+                            else:
+                                print(f"  Odds Trend: {abs(odds_delta):.2f} {direction} than when backed ({percent_change:.1f}% change)")
                             
                             # Show available liquidity
                             available_size = back_prices[0].get('size', 0.0) if back_prices else 0.0
@@ -469,8 +499,16 @@ class CommandProcessor:
             print(f"Current cycle: {ledger['current_cycle']}")
             print(f"Bets in current cycle: {ledger['current_bet_in_cycle']}")
             print(f"Starting stake: £{ledger['starting_stake']:.2f}")
+            
+            # Highlight the stake calculation mechanism
             print(f"Last winning profit: £{ledger.get('last_winning_profit', 0.0):.2f}")
-            print(f"Next bet stake: £{next_stake:.2f}")
+            if ledger['current_bet_in_cycle'] == 0:
+                print(f"Next bet stake: £{next_stake:.2f} (Using starting stake)")
+            elif ledger.get('last_winning_profit', 0.0) > 0:
+                print(f"Next bet stake: £{next_stake:.2f} (Using last winning profit)")
+            else:
+                print(f"Next bet stake: £{next_stake:.2f} (Fallback to starting stake)")
+                
             print(f"Total commission paid: £{ledger.get('total_commission_paid', 0.0):.2f}")
             
             # Show system configuration

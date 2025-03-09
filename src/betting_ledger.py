@@ -29,6 +29,9 @@ class BettingLedger:
         # Initialize file paths
         self.ledger_file = self.data_dir / 'betting_ledger.json'
         
+        # In-memory cache of ledger data
+        self._ledger_cache = None
+        
         # Ensure storage is initialized
         self._ensure_storage()
 
@@ -53,26 +56,54 @@ class BettingLedger:
             }
             with open(self.ledger_file, 'w') as f:
                 json.dump(initial_data, f, indent=2)
+            
+            # Initialize cache
+            self._ledger_cache = initial_data.copy()
+        else:
+            # Load existing data into cache during initialization
+            try:
+                with open(self.ledger_file, 'r') as f:
+                    self._ledger_cache = json.load(f)
+                    self.logger.info(f"Initialized cache from existing ledger file")
+            except Exception as e:
+                self.logger.error(f"Failed to load existing ledger during init: {str(e)}")
+                self._ledger_cache = None
 
     async def _save_json(self, data: Dict) -> None:
-        """Save data to JSON file asynchronously"""
+        """Save data to JSON file asynchronously and update cache"""
         try:
+            # Update the cache first
+            self._ledger_cache = data.copy()
+            
+            # Then save to disk
             async with aiofiles.open(self.ledger_file, 'w') as f:
                 await f.write(json.dumps(data, indent=2))
+                
+            self.logger.debug(f"Saved ledger data to file and updated cache")
         except Exception as e:
             self.logger.error(f"Error saving ledger: {str(e)}")
             raise
 
     async def _load_json(self) -> Dict:
-        """Load data from JSON file asynchronously"""
+        """Load data from JSON file asynchronously with cache support"""
         try:
+            # Use cache if available to reduce disk I/O
+            if self._ledger_cache is not None:
+                return self._ledger_cache.copy()
+            
+            # Read from file if cache isn't initialized
             async with aiofiles.open(self.ledger_file, 'r') as f:
                 content = await f.read()
-                return json.loads(content)
+                data = json.loads(content)
+                
+                # Update cache
+                self._ledger_cache = data.copy()
+                
+                return data
         except Exception as e:
             self.logger.error(f"Error loading ledger: {str(e)}")
             # Return default structure if file can't be loaded
-            return {
+            default_data = {
                 "starting_stake": 1.0,
                 "current_cycle": 1,
                 "current_bet_in_cycle": 0,
@@ -88,6 +119,11 @@ class BettingLedger:
                 "last_winning_profit": 0.0,
                 "last_updated": datetime.now(timezone.utc).isoformat()
             }
+            
+            # Set cache to default data
+            self._ledger_cache = default_data.copy()
+            
+            return default_data
 
     async def get_ledger(self) -> Dict:
         """Get current ledger data"""
@@ -171,7 +207,8 @@ class BettingLedger:
                 if new_balance > ledger["highest_balance"]:
                     ledger["highest_balance"] = new_balance
                 
-                # Track the profit for the next bet's stake (compound strategy)
+                # Set the profit for the next bet's stake (compound strategy)
+                # Make sure we're using the NET profit (after commission)
                 ledger["last_winning_profit"] = profit
                 
                 self.logger.info(
@@ -180,7 +217,8 @@ class BettingLedger:
                     f"Selection: {selection}, Stake: £{stake}, "
                     f"Odds: {odds}, Gross Profit: £{gross_profit}, "
                     f"Commission: £{commission}, Net Profit: £{profit}, "
-                    f"New Balance: £{new_balance}"
+                    f"New Balance: £{new_balance}, "
+                    f"Next Stake Set: £{profit}"
                 )
             else:
                 ledger["total_losses"] += 1
@@ -319,6 +357,7 @@ class BettingLedger:
             
             # If this is the first bet in a cycle, use the initial stake
             if ledger["current_bet_in_cycle"] == 0:
+                self.logger.info(f"First bet in cycle - using initial stake: £{ledger['starting_stake']}")
                 return ledger["starting_stake"]
                 
             # Otherwise, use the profit from the last winning bet
@@ -327,7 +366,8 @@ class BettingLedger:
             if next_stake <= 0:
                 next_stake = ledger["starting_stake"]
                 
-            self.logger.info(f"Next stake calculated as £{next_stake} based on compound strategy")
+            self.logger.info(f"Next stake calculated as £{next_stake} based on compound strategy (last_winning_profit)")
+            
             return next_stake
         
         except Exception as e:
@@ -364,6 +404,9 @@ class BettingLedger:
                 "last_winning_profit": 0.0,
                 "last_updated": datetime.now(timezone.utc).isoformat()
             }
+            
+            # Reset the cache
+            self._ledger_cache = initial_data.copy()
             
             await self._save_json(initial_data)
             self.logger.info("Betting ledger reset successfully")
