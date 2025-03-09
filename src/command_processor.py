@@ -207,11 +207,11 @@ class CommandProcessor:
                             # Use colored text for odds trend
                             if direction == "lower":
                                 # Green for lower odds (our bet is more likely to win)
-                                odds_text = Text(f"  Odds Trend: {abs(odds_delta):.2f} {direction} than when backed ({percent_change:.1f}% change)")
+                                odds_text = Text(f"  +++++++ Odds Trend: {abs(odds_delta):.2f} {direction} than when backed ({percent_change:.1f}% change) +++++++")
                                 odds_text.stylize("bold green")
                                 console.print(odds_text)
                             else:
-                                print(f"  Odds Trend: {abs(odds_delta):.2f} {direction} than when backed ({percent_change:.1f}% change)")
+                                print(f"  ------- Odds Trend: {abs(odds_delta):.2f} {direction} than when backed ({percent_change:.1f}% change) -------")
                             
                             # Show available liquidity
                             available_size = back_prices[0].get('size', 0.0) if back_prices else 0.0
