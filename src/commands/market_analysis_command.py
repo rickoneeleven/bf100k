@@ -6,6 +6,7 @@ Handles validation and analysis of betting markets according to strategy criteri
 Completely refactored to ensure consistent market data retrieval and odds values
 to prevent discrepancies between initial scan and confirmation.
 Updated to use the compound betting strategy with the betting ledger.
+MODIFIED: Selection criteria changed to only bet on draws with higher odds than both teams.
 """
 
 from dataclasses import dataclass
@@ -24,8 +25,6 @@ from ..betting_ledger import BettingLedger
 @dataclass
 class MarketAnalysisRequest:
     """Data structure for market analysis request"""
-    min_odds: float = 3.0
-    max_odds: float = 4.0
     liquidity_factor: float = 1.1
     max_markets: int = 10
     dry_run: bool = True
@@ -66,9 +65,7 @@ class MarketAnalysisCommand:
         Returns: (meets_criteria: bool, reason: str)
         """
         try:
-            if odds < request.min_odds or odds > request.max_odds:
-                return False, f"odds {odds} outside range {request.min_odds}-{request.max_odds}"
-                
+            # Only check liquidity requirement (removed odds range check)
             if available_volume < required_stake * request.liquidity_factor:
                 return False, f"liquidity {available_volume:.2f} < required {required_stake * request.liquidity_factor:.2f}"
                 
@@ -177,56 +174,91 @@ class MarketAnalysisCommand:
             await self._log_market_details(market_id, event_name, runners)
             
             # Get the correct stake amount from the betting ledger
-            # This will return either the initial stake or the profit from the last winning bet
             stake_amount = await self.betting_ledger.get_next_stake()
             
             self.logger.info(f"Using stake amount: £{stake_amount} for next bet (compound strategy)")
             
-            # Check betting criteria for each runner
+            # Find the Draw selection and team runners
+            draw_runner = None
+            team_runners = []
+            
             for runner in runners:
-                selection_id = runner.get('selectionId')
+                selection_id = str(runner.get('selectionId', ''))
                 team_name = runner.get('teamName', 'Unknown')
                 
-                # Get available prices
-                ex = runner.get('ex', {})
-                available_to_back = ex.get('availableToBack', [{}])[0]
+                # Match the logic from selection_mapper.py's derive_teams_from_event method
+                if selection_id == self.selection_mapper.KNOWN_DRAW_SELECTION_ID or team_name.lower() in self.selection_mapper.DRAW_VARIANTS:
+                    draw_runner = runner
+                else:
+                    team_runners.append(runner)
+            
+            # If no Draw selection found, skip market
+            if not draw_runner:
+                self.logger.info(f"No Draw selection found in market {market_id}")
+                return None
                 
-                if not available_to_back:
-                    continue
+            if len(team_runners) < 2:
+                self.logger.info(f"Not enough team runners found in market {market_id}")
+                return None
                 
-                # Get best back price and size
-                odds = available_to_back.get('price', 0)
-                available_size = available_to_back.get('size', 0)
+            # Get Draw odds
+            draw_ex = draw_runner.get('ex', {})
+            draw_available_to_back = draw_ex.get('availableToBack', [{}])[0]
+            
+            if not draw_available_to_back:
+                self.logger.info("No back prices available for Draw")
+                return None
                 
-                # Check market criteria
-                meets_criteria, reason = self.validate_market_criteria(
-                    odds,
-                    available_size,
-                    stake_amount,  # Use the calculated stake amount
-                    request
+            draw_odds = draw_available_to_back.get('price', 0)
+            draw_available_size = draw_available_to_back.get('size', 0)
+            
+            # Get odds for both teams
+            team_odds = []
+            for team_runner in team_runners:
+                team_ex = team_runner.get('ex', {})
+                team_available_to_back = team_ex.get('availableToBack', [{}])[0]
+                
+                if team_available_to_back:
+                    team_odds.append(team_available_to_back.get('price', 0))
+            
+            # Check if Draw odds are higher than both team odds
+            is_draw_odds_highest = len(team_odds) >= 2 and all(draw_odds > team_odd for team_odd in team_odds)
+            
+            if not is_draw_odds_highest:
+                self.logger.info(
+                    f"Draw odds ({draw_odds}) not higher than both teams odds: {team_odds}"
+                )
+                return None
+            
+            # Check liquidity criteria for the Draw
+            meets_criteria, reason = self.validate_market_criteria(
+                draw_odds,
+                draw_available_size,
+                stake_amount,
+                request
+            )
+            
+            if meets_criteria:
+                self.logger.info(
+                    f"Found betting opportunity on Draw: {event_name}, "
+                    f"Odds: {draw_odds}, "
+                    f"Selection ID: {draw_runner.get('selectionId')}, "
+                    f"Stake: £{stake_amount}"
                 )
                 
-                if meets_criteria:
-                    self.logger.info(
-                        f"Found betting opportunity: {event_name}, "
-                        f"Selection: {team_name}, Odds: {odds}, "
-                        f"Selection ID: {selection_id}, "
-                        f"Stake: £{stake_amount}"  # Log the correct stake
-                    )
-                    
-                    return await self._create_betting_opportunity(
-                        market_id=market_id,
-                        event_id=event_id,
-                        market=market_data,
-                        runner=runner,
-                        odds=odds,
-                        stake=stake_amount,  # Use the calculated stake amount
-                        available_volume=available_size
-                    )
-                else:
-                    self.logger.debug(
-                        f"Selection {team_name} doesn't meet criteria: {reason}"
-                    )
+                return await self._create_betting_opportunity(
+                    market_id=market_id,
+                    event_id=event_id,
+                    market=market_data,
+                    runner=draw_runner,
+                    odds=draw_odds,
+                    stake=stake_amount,
+                    available_volume=draw_available_size
+                )
+            else:
+                self.logger.debug(
+                    f"Draw doesn't meet criteria: {reason}"
+                )
             
             # No suitable selections found in this market
             return None
@@ -389,10 +421,8 @@ class MarketAnalysisCommand:
             betting_config = config.get('betting', {})
             market_config = config.get('market_selection', {})
             
-            # Create request with configuration
+            # Create request with configuration (removed min/max odds)
             request = MarketAnalysisRequest(
-                min_odds=betting_config.get('min_odds', 3.0),
-                max_odds=betting_config.get('max_odds', 4.0),
                 liquidity_factor=betting_config.get('liquidity_factor', 1.1),
                 max_markets=market_config.get('max_markets', 10),
                 dry_run=config.get('system', {}).get('dry_run', True),
@@ -435,10 +465,8 @@ class MarketAnalysisCommand:
             betting_config = config.get('betting', {})
             market_config = config.get('market_selection', {})
             
-            # Create request with configuration
+            # Create request with configuration (removed min/max odds)
             request = MarketAnalysisRequest(
-                min_odds=betting_config.get('min_odds', 3.0),
-                max_odds=betting_config.get('max_odds', 4.0),
                 liquidity_factor=betting_config.get('liquidity_factor', 1.1),
                 max_markets=market_config.get('max_markets', 10),
                 dry_run=config.get('system', {}).get('dry_run', True),
