@@ -322,6 +322,17 @@ async def main():
         initial_stake = config.get('betting', {}).get('initial_stake', 1.0)
         await account_repository.reset_to_starting_stake(initial_stake)
         
+        # Add this code to also reset the betting ledger
+        print("Resetting betting ledger to configured starting stake...")
+        await betting_ledger.reset_ledger(initial_stake)
+        
+        # After resetting both components
+        account_status = await account_repository.get_account_status()
+        ledger_info = await betting_ledger.get_ledger()
+        print(f"DEBUG - Account balance: £{account_status.current_balance}")
+        print(f"DEBUG - Ledger starting stake: £{ledger_info['starting_stake']}")
+        print(f"DEBUG - Ledger highest balance: £{ledger_info['highest_balance']}")
+        
         # Initialize system with configuration
         print("Initializing betting system...")
         betting_system = BettingSystem(

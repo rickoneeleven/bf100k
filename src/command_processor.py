@@ -492,12 +492,17 @@ class CommandProcessor:
     async def cmd_reset(self, args: List[str] = None) -> None:
         """Reset the betting ledger and system"""
         try:
-            initial_stake = 1.0
+            # Get the configured initial stake from config_manager
+            config = self.betting_system.config_manager.get_config()
+            configured_stake = config.get('betting', {}).get('initial_stake', 1.0)
+            
+            initial_stake = configured_stake  # Use configured value as default
             if args and len(args) > 0:
                 try:
                     initial_stake = float(args[0])
                 except ValueError:
-                    print(f"Invalid stake amount: {args[0]}. Using default: £1.0")
+                    print(f"Invalid stake amount: {args[0]}. Using configured default: £{configured_stake}")
+            
             
             # Ask for confirmation
             print(f"\nAre you sure you want to reset the betting system with initial stake: £{initial_stake}?")
