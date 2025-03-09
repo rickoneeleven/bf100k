@@ -5,6 +5,7 @@ Improved Command pattern implementation for bet settlement operations.
 Uses real Betfair API results instead of simulation.
 Handles validation, execution, and recording of bet settlements.
 Enhanced with consistent selection ID handling and unified market data retrieval.
+Added 5% Betfair commission calculation on winning bets.
 """
 
 from dataclasses import dataclass
@@ -77,7 +78,7 @@ class BetSettlementCommand:
             self.logger.error(f"Error validating settlement request: {str(e)}")
             return False, f"Validation error: {str(e)}"
 
-    async def check_bet_result(self, bet_details: Dict) -> Tuple[bool, float, str]:
+    async def check_bet_result(self, bet_details: Dict) -> Tuple[bool, float, float, float, str]:
         """
         Check the result of a bet using Betfair API with enhanced selection handling
         
@@ -85,7 +86,7 @@ class BetSettlementCommand:
             bet_details: Bet details including market_id and selection_id
             
         Returns:
-            Tuple of (won: bool, profit: float, status_message: str)
+            Tuple of (won: bool, gross_profit: float, commission: float, net_profit: float, status_message: str)
         """
         try:
             market_id = bet_details["market_id"]
@@ -97,7 +98,7 @@ class BetSettlementCommand:
             self.logger.info(
                 f"Checking result for bet: Market {market_id}, "
                 f"Selection {selection_id} ({team_name}), "
-                f"Stake: Â£{stake}, Odds: {odds}"
+                f"Stake: £{stake}, Odds: {odds}"
             )
             
             # Get result from Betfair using consistent method
@@ -106,15 +107,27 @@ class BetSettlementCommand:
             )
             
             # Calculate profit if won
-            profit = 0.0
+            gross_profit = 0.0
+            commission = 0.0
+            net_profit = 0.0
+            
             if won:
-                profit = stake * (odds - 1)
+                gross_profit = stake * (odds - 1)
+                # Apply 5% Betfair commission on winnings
+                commission = gross_profit * 0.05
+                net_profit = gross_profit - commission
                 
-            return won, profit, status_message
+                self.logger.info(
+                    f"Bet won: Gross profit: £{gross_profit:.2f}, "
+                    f"Commission (5%): £{commission:.2f}, "
+                    f"Net profit: £{net_profit:.2f}"
+                )
+                
+            return won, gross_profit, commission, net_profit, status_message
             
         except Exception as e:
             self.logger.error(f"Error checking bet result: {str(e)}")
-            return False, 0.0, f"Error: {str(e)}"
+            return False, 0.0, 0.0, 0.0, f"Error: {str(e)}"
 
     async def execute(self, request: BetSettlementRequest) -> Optional[Dict]:
         """
@@ -144,17 +157,28 @@ class BetSettlementCommand:
             if request.forced_settlement:
                 # Use forced result (for dry run or testing)
                 won = request.force_won
-                profit = request.force_profit
+                gross_profit = request.force_profit
+                commission = gross_profit * 0.05 if won else 0.0
+                net_profit = gross_profit - commission if won else 0.0
                 status = "Forced settlement"
+                
                 self.logger.info(
-                    f"Using forced settlement result: Won: {won}, Profit: Â£{profit} "
+                    f"Using forced settlement result: Won: {won}, "
+                    f"Gross profit: £{gross_profit:.2f}, "
+                    f"Commission: £{commission:.2f}, "
+                    f"Net profit: £{net_profit:.2f} "
                     f"for selection {selection_id} ({team_name})"
                 )
             else:
                 # Get actual result from Betfair
-                won, profit, status = await self.check_bet_result(bet_details)
+                won, gross_profit, commission, net_profit, status = await self.check_bet_result(bet_details)
+                
                 self.logger.info(
-                    f"Got result from Betfair: Won: {won}, Profit: Â£{profit}, Status: {status} "
+                    f"Got result from Betfair: Won: {won}, "
+                    f"Gross profit: £{gross_profit:.2f}, "
+                    f"Commission: £{commission:.2f}, "
+                    f"Net profit: £{net_profit:.2f}, "
+                    f"Status: {status} "
                     f"for selection {selection_id} ({team_name})"
                 )
             
@@ -164,13 +188,19 @@ class BetSettlementCommand:
                 await self.bet_repository.record_bet_settlement(
                     bet_details=bet_details,
                     won=won,
-                    profit=profit
+                    gross_profit=gross_profit,
+                    commission=commission,
+                    net_profit=net_profit
                 )
                 
                 # Update account balance and stats
                 if won:
-                    # Add stake plus profit for winning bets
-                    await self.account_repository.update_balance(bet_details["stake"] + profit)
+                    # Add stake plus net profit for winning bets
+                    # Only using the net profit after commission
+                    await self.account_repository.update_balance(
+                        bet_details["stake"] + net_profit, 
+                        f"Bet settlement: {won}, Market: {request.market_id}"
+                    )
                 
                 # Update bet statistics
                 await self.account_repository.update_bet_stats(won)
@@ -178,7 +208,7 @@ class BetSettlementCommand:
                 self.logger.info(
                     f"Successfully settled bet: Market ID {request.market_id}, "
                     f"Selection: {selection_id} ({team_name}), "
-                    f"Won: {won}, Profit: Â£{profit}"
+                    f"Won: {won}, Net Profit: £{net_profit}"
                 )
                 
                 # Get updated bet details

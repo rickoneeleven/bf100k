@@ -3,6 +3,7 @@ betting_ledger.py
 
 Handles tracking of betting cycles and performance metrics for the compound betting strategy.
 Maintains a history of bets, cycles, and performance over time.
+Enhanced to record commission amounts and properly track previous bet profits for stake calculation.
 """
 
 import json
@@ -46,6 +47,8 @@ class BettingLedger:
                 "highest_cycle_reached": 1,   # Highest cycle number reached
                 "highest_balance": 1.0,       # Highest balance reached
                 "cycle_history": [],          # History of completed cycles
+                "total_commission_paid": 0.0, # Total Betfair commission paid
+                "last_winning_profit": 0.0,   # Profit from last winning bet for compound strategy
                 "last_updated": datetime.now(timezone.utc).isoformat()
             }
             with open(self.ledger_file, 'w') as f:
@@ -81,6 +84,8 @@ class BettingLedger:
                 "highest_cycle_reached": 1,
                 "highest_balance": 1.0,
                 "cycle_history": [],
+                "total_commission_paid": 0.0,
+                "last_winning_profit": 0.0,
                 "last_updated": datetime.now(timezone.utc).isoformat()
             }
 
@@ -127,19 +132,23 @@ class BettingLedger:
             self.logger.error(f"Error recording bet placement: {str(e)}")
             raise
 
-    async def record_bet_result(self, 
-                               bet_details: Dict, 
-                               won: bool, 
-                               profit: float, 
-                               new_balance: float) -> Dict:
+    async def record_bet_result(
+        self, 
+        bet_details: Dict, 
+        won: bool, 
+        profit: float, 
+        new_balance: float,
+        commission: float = 0.0
+    ) -> Dict:
         """
         Record a bet result and update the ledger
         
         Args:
             bet_details: Details of the bet
             won: Whether the bet was successful
-            profit: Amount of profit (if won)
+            profit: Amount of profit (net profit after commission if won)
             new_balance: New account balance after bet settlement
+            commission: Commission amount (if won)
             
         Returns:
             Updated ledger data
@@ -152,23 +161,33 @@ class BettingLedger:
             selection = bet_details.get("team_name", "Unknown")
             stake = bet_details.get("stake", 0.0)
             odds = bet_details.get("odds", 0.0)
+            gross_profit = bet_details.get("gross_profit", profit + commission)
             
             if won:
                 ledger["total_wins"] += 1
+                ledger["total_commission_paid"] = ledger.get("total_commission_paid", 0.0) + commission
                 
                 # Update highest balance if needed
                 if new_balance > ledger["highest_balance"]:
                     ledger["highest_balance"] = new_balance
-                    
+                
+                # Track the profit for the next bet's stake (compound strategy)
+                ledger["last_winning_profit"] = profit
+                
                 self.logger.info(
                     f"Bet WON - Cycle: {ledger['current_cycle']}, "
                     f"Bet #{ledger['current_bet_in_cycle']} in cycle, "
                     f"Selection: {selection}, Stake: £{stake}, "
-                    f"Odds: {odds}, Profit: £{profit}, New Balance: £{new_balance}"
+                    f"Odds: {odds}, Gross Profit: £{gross_profit}, "
+                    f"Commission: £{commission}, Net Profit: £{profit}, "
+                    f"New Balance: £{new_balance}"
                 )
             else:
                 ledger["total_losses"] += 1
                 ledger["total_money_lost"] += stake
+                
+                # Reset the last winning profit
+                ledger["last_winning_profit"] = 0.0
                 
                 # Record completed cycle
                 cycle_record = {
@@ -234,6 +253,7 @@ class BettingLedger:
                 # Reset for new cycle
                 ledger["current_cycle"] += 1
                 ledger["current_bet_in_cycle"] = 0
+                ledger["last_winning_profit"] = 0.0  # Reset winning profit for new cycle
                 
                 # Update highest cycle if needed
                 if ledger["current_cycle"] > ledger["highest_cycle_reached"]:
@@ -267,7 +287,8 @@ class BettingLedger:
                 "total_losses": ledger["total_losses"],
                 "total_money_lost": ledger["total_money_lost"],
                 "highest_cycle_reached": ledger["highest_cycle_reached"],
-                "highest_balance": ledger["highest_balance"]
+                "highest_balance": ledger["highest_balance"],
+                "total_commission_paid": ledger.get("total_commission_paid", 0.0)
             }
         except Exception as e:
             self.logger.error(f"Error getting cycle info: {str(e)}")
@@ -281,8 +302,38 @@ class BettingLedger:
                 "total_losses": 0,
                 "total_money_lost": 0.0,
                 "highest_cycle_reached": 1,
-                "highest_balance": 1.0
+                "highest_balance": 1.0,
+                "total_commission_paid": 0.0
             }
+    
+    async def get_next_stake(self) -> float:
+        """
+        Get the stake amount for the next bet based on the compound strategy
+        using only the previous bet's profit
+        
+        Returns:
+            Stake amount for the next bet
+        """
+        try:
+            ledger = await self._load_json()
+            
+            # If this is the first bet in a cycle, use the initial stake
+            if ledger["current_bet_in_cycle"] == 0:
+                return ledger["starting_stake"]
+                
+            # Otherwise, use the profit from the last winning bet
+            # If there's no recorded profit (e.g., after a reset), use initial stake
+            next_stake = ledger.get("last_winning_profit", 0.0)
+            if next_stake <= 0:
+                next_stake = ledger["starting_stake"]
+                
+            self.logger.info(f"Next stake calculated as £{next_stake} based on compound strategy")
+            return next_stake
+        
+        except Exception as e:
+            self.logger.error(f"Error getting next stake: {str(e)}")
+            # Return default stake amount if error occurs
+            return 1.0
             
     async def reset_ledger(self, starting_stake: float = 1.0) -> Dict:
         """
@@ -309,6 +360,8 @@ class BettingLedger:
                 "highest_cycle_reached": 1,
                 "highest_balance": starting_stake,
                 "cycle_history": [],
+                "total_commission_paid": 0.0,
+                "last_winning_profit": 0.0,
                 "last_updated": datetime.now(timezone.utc).isoformat()
             }
             

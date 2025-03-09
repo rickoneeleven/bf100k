@@ -3,6 +3,7 @@ bet_repository.py
 
 Async repository pattern implementation for bet data management.
 Handles storage and retrieval of bet records.
+Enhanced to track commission and profit details.
 """
 
 import json
@@ -109,8 +110,15 @@ class BetRepository:
         await self._save_json(self.active_bets_file, active_bets)
         self.logger.info(f"Successfully recorded bet placement")
 
-    async def record_bet_settlement(self, bet_details: Dict, won: bool, profit: float) -> None:
-        """Record settlement of a bet asynchronously"""
+    async def record_bet_settlement(
+        self, 
+        bet_details: Dict, 
+        won: bool, 
+        gross_profit: float = 0.0, 
+        commission: float = 0.0, 
+        net_profit: float = 0.0
+    ) -> None:
+        """Record settlement of a bet asynchronously with commission details"""
         self.logger.info(f"Recording bet settlement for market {bet_details['market_id']}")
         
         # Load both files
@@ -127,7 +135,9 @@ class BetRepository:
         # Add settlement details
         bet_details["settlement_time"] = datetime.now(timezone.utc).isoformat()
         bet_details["won"] = won
-        bet_details["profit"] = profit
+        bet_details["gross_profit"] = gross_profit
+        bet_details["commission"] = commission
+        bet_details["profit"] = net_profit
         
         # Add to settled bets
         settled_bets["bets"].append(bet_details)
@@ -139,9 +149,9 @@ class BetRepository:
         
         self.logger.info(
             f"Successfully recorded bet settlement: "
-            f"Won: {won}, Profit: £{profit}"
+            f"Won: {won}, Gross Profit: £{gross_profit:.2f}, "
+            f"Commission: £{commission:.2f}, Net Profit: £{net_profit:.2f}"
         )
-        
         
     async def reset_bet_history(self) -> None:
         """Reset all bet history"""

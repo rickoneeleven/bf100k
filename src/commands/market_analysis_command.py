@@ -5,6 +5,7 @@ Improved Command pattern implementation for market analysis operations.
 Handles validation and analysis of betting markets according to strategy criteria.
 Completely refactored to ensure consistent market data retrieval and odds values
 to prevent discrepancies between initial scan and confirmation.
+Updated to use the compound betting strategy with the betting ledger.
 """
 
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from ..repositories.account_repository import AccountRepository
 from ..betfair_client import BetfairClient
 from ..selection_mapper import SelectionMapper
 from ..config_manager import ConfigManager
+from ..betting_ledger import BettingLedger
 
 @dataclass
 class MarketAnalysisRequest:
@@ -43,6 +45,7 @@ class MarketAnalysisCommand:
         self.account_repository = account_repository
         self.selection_mapper = SelectionMapper()
         self.config_manager = config_manager
+        self.betting_ledger = BettingLedger()
         
         self.logger = logging.getLogger('MarketAnalysisCommand')
         self.logger.setLevel(logging.INFO)
@@ -109,7 +112,7 @@ class MarketAnalysisCommand:
                 # Add to runner details
                 runner_details.append(
                     f"{team_name} (ID: {selection_id}, Priority: {sort_priority}, "
-                    f"Win: {back_price} / Available: Â£{back_size})"
+                    f"Win: {back_price} / Available: £{back_size})"
                 )
             
             # Log the full market details
@@ -125,7 +128,6 @@ class MarketAnalysisCommand:
         self,
         market_id: str,
         event_name: str,
-        current_balance: float,
         request: MarketAnalysisRequest
     ) -> Optional[Dict]:
         """
@@ -134,7 +136,6 @@ class MarketAnalysisCommand:
         Args:
             market_id: Market ID to analyze
             event_name: Event name for logging
-            current_balance: Current account balance for stake calculations
             request: Analysis request parameters
             
         Returns:
@@ -175,6 +176,12 @@ class MarketAnalysisCommand:
             # Log detailed market information
             await self._log_market_details(market_id, event_name, runners)
             
+            # Get the correct stake amount from the betting ledger
+            # This will return either the initial stake or the profit from the last winning bet
+            stake_amount = await self.betting_ledger.get_next_stake()
+            
+            self.logger.info(f"Using stake amount: £{stake_amount} for next bet (compound strategy)")
+            
             # Check betting criteria for each runner
             for runner in runners:
                 selection_id = runner.get('selectionId')
@@ -195,7 +202,7 @@ class MarketAnalysisCommand:
                 meets_criteria, reason = self.validate_market_criteria(
                     odds,
                     available_size,
-                    current_balance,
+                    stake_amount,  # Use the calculated stake amount
                     request
                 )
                 
@@ -203,7 +210,8 @@ class MarketAnalysisCommand:
                     self.logger.info(
                         f"Found betting opportunity: {event_name}, "
                         f"Selection: {team_name}, Odds: {odds}, "
-                        f"Selection ID: {selection_id}"
+                        f"Selection ID: {selection_id}, "
+                        f"Stake: £{stake_amount}"  # Log the correct stake
                     )
                     
                     return await self._create_betting_opportunity(
@@ -212,7 +220,7 @@ class MarketAnalysisCommand:
                         market=market_data,
                         runner=runner,
                         odds=odds,
-                        stake=current_balance,
+                        stake=stake_amount,  # Use the calculated stake amount
                         available_volume=available_size
                     )
                 else:
@@ -290,7 +298,7 @@ class MarketAnalysisCommand:
             self.logger.info(
                 f"Created betting opportunity: Market: {market_id}, Event: {event_name}, "
                 f"Selection: {team_name} (ID: {selection_id}, Priority: {sort_priority}), "
-                f"Odds: {odds}, Stake: Â£{stake}"
+                f"Odds: {odds}, Stake: £{stake}"
             )
             
             return opportunity
@@ -321,10 +329,6 @@ class MarketAnalysisCommand:
             Betting opportunity if found, None otherwise
         """
         try:
-            # Get current balance for stake calculation
-            account_status = await self.account_repository.get_account_status()
-            current_balance = account_status.current_balance
-            
             self.logger.info(
                 f"Analyzing markets (attempt {request.polling_count + 1}/{request.max_polling_attempts})"
             )
@@ -354,7 +358,6 @@ class MarketAnalysisCommand:
                 opportunity = await self._analyze_individual_market(
                     market_id,
                     event_name,
-                    current_balance,
                     request
                 )
                 

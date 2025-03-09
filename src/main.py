@@ -4,6 +4,7 @@ main.py
 Entry point for the betting system with command-line interface.
 Handles initialization, interactive command processing, and graceful shutdown.
 Enhanced with improved signal handling and cleanup procedures.
+Updated to support Betfair commission and compound betting strategy.
 """
 
 import os
@@ -37,6 +38,16 @@ async def run_betting_cycle(betting_system: BettingSystem):
             logging.info("Active bet exists - skipping market scan")
             return
             
+        # Get current cycle info and next stake amount using compound strategy
+        cycle_info = await betting_system.betting_ledger.get_current_cycle_info()
+        next_stake = await betting_system.betting_ledger.get_next_stake()
+        
+        logging.info(
+            f"Running betting cycle - Cycle: {cycle_info['current_cycle']}, "
+            f"Bet in cycle: {cycle_info['current_bet_in_cycle'] + 1}, "
+            f"Next stake: £{next_stake:.2f} (compound strategy)"
+        )
+            
         # Scan for opportunities
         opportunity = await betting_system.scan_markets()
         
@@ -48,7 +59,8 @@ async def run_betting_cycle(betting_system: BettingSystem):
                 logging.info(
                     f"Bet placed - Cycle #{account_status['current_cycle']}, "
                     f"Bet #{account_status['current_bet_in_cycle']} in cycle, "
-                    f"Balance: £{account_status['current_balance']:.2f}"
+                    f"Balance: £{account_status['current_balance']:.2f}, "
+                    f"Stake: £{bet['stake']:.2f}"
                 )
     except Exception as e:
         logging.error(f"Error in betting cycle: {str(e)}")
@@ -65,11 +77,14 @@ async def check_results(betting_system: BettingSystem):
             
             # Get updated status
             status = await betting_system.get_account_status()
+            ledger = await betting_system.get_ledger_info()
+            
             logging.info(
                 f"Updated status - Cycle: {status['current_cycle']}, "
                 f"Balance: £{status['current_balance']:.2f}, "
                 f"Total cycles: {status['total_cycles']}, "
-                f"Total money lost: £{status['total_money_lost']:.2f}"
+                f"Total money lost: £{status['total_money_lost']:.2f}, "
+                f"Total commission paid: £{ledger.get('total_commission_paid', 0.0):.2f}"
             )
     except Exception as e:
         logging.error(f"Error checking results: {str(e)}")
@@ -82,6 +97,9 @@ async def display_status(betting_system: BettingSystem):
         status = await betting_system.get_account_status()
         ledger = await betting_system.get_ledger_info()
         
+        # Get next stake using compound strategy
+        next_stake = await betting_system.betting_ledger.get_next_stake()
+        
         # Display summary
         print("\n" + "="*60)
         print("BETTING SYSTEM STATUS SUMMARY")
@@ -89,12 +107,14 @@ async def display_status(betting_system: BettingSystem):
         print(f"Current Cycle: #{status['current_cycle']}")
         print(f"Current Bet in Cycle: #{status['current_bet_in_cycle']}")
         print(f"Current Balance: £{status['current_balance']:.2f}")
+        print(f"Next Bet Stake: £{next_stake:.2f}")
         print(f"Target Amount: £{status['target_amount']:.2f}")
         print(f"Total Cycles Completed: {status['total_cycles']}")
         print(f"Total Bets Placed: {status['total_bets_placed']}")
         print(f"Successful Bets: {status['successful_bets']}")
         print(f"Win Rate: {status['win_rate']:.1f}%")
         print(f"Total Money Lost: £{status['total_money_lost']:.2f}")
+        print(f"Total Commission Paid: £{ledger.get('total_commission_paid', 0.0):.2f}")
         print(f"Highest Balance Reached: £{ledger['highest_balance']:.2f}")
         print("="*60 + "\n")
         
@@ -104,12 +124,14 @@ async def display_status(betting_system: BettingSystem):
         logging.info(f"Current Cycle: #{status['current_cycle']}")
         logging.info(f"Current Bet in Cycle: #{status['current_bet_in_cycle']}")
         logging.info(f"Current Balance: £{status['current_balance']:.2f}")
+        logging.info(f"Next Bet Stake: £{next_stake:.2f}")
         logging.info(f"Target Amount: £{status['target_amount']:.2f}")
         logging.info(f"Total Cycles Completed: {status['total_cycles']}")
         logging.info(f"Total Bets Placed: {status['total_bets_placed']}")
         logging.info(f"Successful Bets: {status['successful_bets']}")
         logging.info(f"Win Rate: {status['win_rate']:.1f}%")
         logging.info(f"Total Money Lost: £{status['total_money_lost']:.2f}")
+        logging.info(f"Total Commission Paid: £{ledger.get('total_commission_paid', 0.0):.2f}")
         logging.info(f"Highest Balance Reached: £{ledger['highest_balance']:.2f}")
         logging.info("="*60 + "\n")
     except Exception as e:

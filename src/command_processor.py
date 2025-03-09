@@ -4,6 +4,7 @@ command_processor.py
 Handles command line input processing for the betting system.
 Provides interactive commands during system operation with enhanced
 bet details display showing consistent selection mapping.
+Updated to display commission details in bet history.
 """
 
 import logging
@@ -75,7 +76,12 @@ class CommandProcessor:
             print(f"Successful Bets: {status['successful_bets']}")
             print(f"Win Rate: {status['win_rate']:.1f}%")
             print(f"Total Money Lost: £{status['total_money_lost']:.2f}")
+            print(f"Total Commission Paid: £{ledger.get('total_commission_paid', 0.0):.2f}")
             print(f"Highest Balance Reached: £{ledger['highest_balance']:.2f}")
+            
+            # Get next stake calculation based on compound strategy
+            next_stake = await self.betting_system.betting_ledger.get_next_stake()
+            print(f"Next Bet Stake: £{next_stake:.2f} (Compound Strategy)")
             
             # Show current configuration
             config = self.betting_system.config_manager.get_config()
@@ -157,7 +163,7 @@ class CommandProcessor:
                         
                         # Mark our selection based on selection ID comparison (not by order)
                         is_our_selection = current_selection_id == selection_id
-                        selection_marker = " ➜ OUR BET" if is_our_selection else ""
+                        selection_marker = " ← OUR BET" if is_our_selection else ""
                         
                         # Get current best back price
                         back_prices = runner.get('ex', {}).get('availableToBack', [])
@@ -289,7 +295,7 @@ class CommandProcessor:
             self.logger.exception(e)
     
     async def cmd_bet_history(self, args: List[str] = None) -> None:
-        """Display history of settled bets"""
+        """Display history of settled bets with commission information"""
         try:
             settled_bets = await self.betting_system.get_settled_bets()
             
@@ -320,6 +326,7 @@ class CommandProcessor:
             
             total_won = 0
             total_lost = 0
+            total_commission = 0.0
             
             for bet in display_bets:
                 market_id = bet.get("market_id")
@@ -330,7 +337,13 @@ class CommandProcessor:
                 odds = bet.get('odds', 0.0)
                 stake = bet.get('stake', 0.0)
                 won = bet.get('won', False)
-                profit = bet.get('profit', 0.0)
+                
+                # Get profit and commission details
+                gross_profit = bet.get('gross_profit', 0.0)
+                commission = bet.get('commission', 0.0)
+                net_profit = bet.get('profit', 0.0)
+                
+                total_commission += commission if won else 0.0
                 
                 if won:
                     total_won += 1
@@ -349,18 +362,28 @@ class CommandProcessor:
                 
                 # Display bet details
                 result_marker = "✓ WON" if won else "✗ LOST"
-                profit_display = f"+£{profit:.2f}" if won else f"-£{stake:.2f}"
+                
+                if won:
+                    profit_display = f"+£{net_profit:.2f} (Commission: £{commission:.2f})"
+                else:
+                    profit_display = f"-£{stake:.2f}"
                 
                 print(f"\n{formatted_settlement} - {result_marker} - {profit_display}")
                 print(f"Event: {event_name}")
                 print(f"Selection: {team_name} (ID: {selection_id}) @ {odds}")
                 print(f"Stake: £{stake:.2f}")
+                
+                if won:
+                    print(f"Gross Profit: £{gross_profit:.2f}")
+                    print(f"Commission (5%): £{commission:.2f}")
+                    print(f"Net Profit: £{net_profit:.2f}")
             
             # Show summary
             win_rate = (total_won / len(display_bets)) * 100 if display_bets else 0
             print("\nSummary:")
             print(f"Won: {total_won}, Lost: {total_lost}")
             print(f"Win Rate: {win_rate:.1f}%")
+            print(f"Total Commission Paid: £{total_commission:.2f}")
             print("="*75 + "\n")
                 
         except Exception as e:
@@ -437,6 +460,18 @@ class CommandProcessor:
                     print(f"\nBet #{i+1}:")
                     for key, value in bet.items():
                         print(f"  {key}: {value}")
+            
+            # Get ledger information for next stake calculation
+            ledger = await self.betting_system.get_ledger_info()
+            next_stake = await self.betting_system.betting_ledger.get_next_stake()
+            
+            print("\nLedger Information:")
+            print(f"Current cycle: {ledger['current_cycle']}")
+            print(f"Bets in current cycle: {ledger['current_bet_in_cycle']}")
+            print(f"Starting stake: £{ledger['starting_stake']:.2f}")
+            print(f"Last winning profit: £{ledger.get('last_winning_profit', 0.0):.2f}")
+            print(f"Next bet stake: £{next_stake:.2f}")
+            print(f"Total commission paid: £{ledger.get('total_commission_paid', 0.0):.2f}")
             
             # Show system configuration
             config = self.betting_system.config_manager.get_config()
