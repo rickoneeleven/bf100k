@@ -37,14 +37,16 @@ class MarketAnalysisCommand:
         betfair_client: BetfairClient,
         bet_repository: BetRepository,
         account_repository: AccountRepository,
-        config_manager: ConfigManager
+        config_manager: ConfigManager,
+        betting_ledger: BettingLedger = None
     ):
         self.betfair_client = betfair_client
         self.bet_repository = bet_repository
         self.account_repository = account_repository
         self.selection_mapper = SelectionMapper()
         self.config_manager = config_manager
-        self.betting_ledger = BettingLedger()
+        # Use provided betting ledger or create a new one if none was provided
+        self.betting_ledger = betting_ledger if betting_ledger else BettingLedger()
         
         self.logger = logging.getLogger('MarketAnalysisCommand')
         self.logger.setLevel(logging.INFO)
@@ -109,7 +111,7 @@ class MarketAnalysisCommand:
                 # Add to runner details
                 runner_details.append(
                     f"{team_name} (ID: {selection_id}, Priority: {sort_priority}, "
-                    f"Win: {back_price} / Available: £{back_size})"
+                    f"Win: {back_price} / Available: Â£{back_size})"
                 )
             
             # Log the full market details
@@ -176,7 +178,7 @@ class MarketAnalysisCommand:
             # Get the correct stake amount from the betting ledger
             stake_amount = await self.betting_ledger.get_next_stake()
             
-            self.logger.info(f"Using stake amount: £{stake_amount} for next bet (compound strategy)")
+            self.logger.info(f"Using stake amount: Â£{stake_amount} for next bet (compound strategy)")
             
             # Find the Draw selection and team runners
             draw_runner = None
@@ -243,7 +245,7 @@ class MarketAnalysisCommand:
                     f"Found betting opportunity on Draw: {event_name}, "
                     f"Odds: {draw_odds}, "
                     f"Selection ID: {draw_runner.get('selectionId')}, "
-                    f"Stake: £{stake_amount}"
+                    f"Stake: Â£{stake_amount}"
                 )
                 
                 return await self._create_betting_opportunity(
@@ -330,7 +332,7 @@ class MarketAnalysisCommand:
             self.logger.info(
                 f"Created betting opportunity: Market: {market_id}, Event: {event_name}, "
                 f"Selection: {team_name} (ID: {selection_id}, Priority: {sort_priority}), "
-                f"Odds: {odds}, Stake: £{stake}"
+                f"Odds: {odds}, Stake: Â£{stake}"
             )
             
             return opportunity

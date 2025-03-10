@@ -33,13 +33,15 @@ class PlaceBetCommand:
         self,
         betfair_client: BetfairClient,
         bet_repository: BetRepository,
-        account_repository: AccountRepository
+        account_repository: AccountRepository,
+        betting_ledger: BettingLedger = None
     ):
         self.betfair_client = betfair_client
         self.bet_repository = bet_repository
         self.account_repository = account_repository
         self.selection_mapper = SelectionMapper()
-        self.betting_ledger = BettingLedger()  # Add the betting ledger to access cycle info
+        # Use provided betting ledger or create a new one if none was provided
+        self.betting_ledger = betting_ledger if betting_ledger else BettingLedger()
         
         # Setup logging
         self.logger = logging.getLogger('PlaceBetCommand')
@@ -238,7 +240,7 @@ class PlaceBetCommand:
             self.logger.info(
                 f"Successfully placed bet: Market ID {request.market_id}, "
                 f"Selection: {team_name} (ID: {request.selection_id}, Priority: {sort_priority}), "
-                f"Stake £{request.stake}, Odds: {request.odds}, "
+                f"Stake Â£{request.stake}, Odds: {request.odds}, "
                 f"Cycle #{cycle_info['current_cycle']}, Bet #{cycle_info['current_bet_in_cycle'] + 1} in cycle"
             )
             
