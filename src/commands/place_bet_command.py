@@ -5,6 +5,7 @@ Implements async Command pattern for bet placement operations.
 Handles validation, execution, and recording of bet placement.
 Enhanced with improved selection ID to team name mapping for consistency.
 Updated to use consistent market data retrieval method.
+FIXED: Properly synchronize with betting ledger cycle information
 """
 
 from dataclasses import dataclass
@@ -214,7 +215,8 @@ class PlaceBetCommand:
                         sort_priority = runner.get('sortPriority', 999)
                         break
             
-            # Get cycle information from betting ledger
+            # FIXED: Always get the most current cycle information from the ledger
+            # This ensures we're using the correct cycle number after a previous bet has been lost
             cycle_info = await self.betting_ledger.get_current_cycle_info()
             
             # Create bet record with enhanced details including cycle information
@@ -233,6 +235,13 @@ class PlaceBetCommand:
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
+            # Log cycle information for debugging
+            self.logger.info(
+                f"Using current cycle information from ledger: "
+                f"Cycle #{cycle_info['current_cycle']}, "
+                f"Bet #{cycle_info['current_bet_in_cycle'] + 1} in cycle"
+            )
+            
             # Record bet placement and update balance atomically
             await self.bet_repository.record_bet_placement(bet_details)
             await self.account_repository.update_balance(-request.stake)
@@ -240,7 +249,7 @@ class PlaceBetCommand:
             self.logger.info(
                 f"Successfully placed bet: Market ID {request.market_id}, "
                 f"Selection: {team_name} (ID: {request.selection_id}, Priority: {sort_priority}), "
-                f"Stake Â£{request.stake}, Odds: {request.odds}, "
+                f"Stake ÃÂ£{request.stake}, Odds: {request.odds}, "
                 f"Cycle #{cycle_info['current_cycle']}, Bet #{cycle_info['current_bet_in_cycle'] + 1} in cycle"
             )
             

@@ -12,6 +12,7 @@ Updates include:
 - Updated to ensure consistent market data retrieval
 - Added 5% Betfair commission handling
 - Updated to use compound betting strategy based on previous bet profit
+- FIXED: Proper cycle tracking to ensure cycles increment correctly after lost bets
 """
 
 import logging
@@ -102,7 +103,7 @@ class BettingSystem:
             self.logger.info(
                 f"Scanning markets - Cycle #{cycle_info['current_cycle']}, "
                 f"Bet #{cycle_info['current_bet_in_cycle'] + 1} in cycle, "
-                f"Next stake: Â£{next_stake:.2f} (compound strategy)"
+                f"Next stake: ÃÂ£{next_stake:.2f} (compound strategy)"
             )
             
             # Execute market analysis with polling
@@ -116,8 +117,8 @@ class BettingSystem:
                         f"Selection: {betting_opportunity['team_name']}\n"
                         f"Selection ID: {betting_opportunity['selection_id']}\n"
                         f"Odds: {betting_opportunity['odds']}\n"
-                        f"Stake: Â£{betting_opportunity['stake']}\n"
-                        f"Available Volume: Â£{betting_opportunity['available_volume']}"
+                        f"Stake: ÃÂ£{betting_opportunity['stake']}\n"
+                        f"Available Volume: ÃÂ£{betting_opportunity['available_volume']}"
                     )
                 return betting_opportunity
             
@@ -175,6 +176,12 @@ class BettingSystem:
             # Ensure market_start_time is included if available
             if 'market_start_time' not in betting_opportunity and 'marketStartTime' in betting_opportunity:
                 betting_opportunity['market_start_time'] = betting_opportunity['marketStartTime']
+               
+            # FIXED: Always get the latest cycle information from the ledger before placing the bet
+            # This ensures the cycle information is correct, especially after a previous bet has been lost
+            cycle_info = await self.betting_ledger.get_current_cycle_info()
+            betting_opportunity['cycle_number'] = cycle_info['current_cycle']
+            betting_opportunity['bet_in_cycle'] = cycle_info['current_bet_in_cycle'] + 1
                 
             # Log the complete betting opportunity for debugging
             self.logger.info(
@@ -182,7 +189,9 @@ class BettingSystem:
                 f"Selection ID: {betting_opportunity['selection_id']}, "
                 f"Team: '{betting_opportunity['team_name']}', "
                 f"Odds: {betting_opportunity['odds']}, "
-                f"Stake: Â£{betting_opportunity['stake']}"
+                f"Stake: ÃÂ£{betting_opportunity['stake']}, "
+                f"Cycle: {betting_opportunity['cycle_number']}, "
+                f"Bet in cycle: {betting_opportunity['bet_in_cycle']}"
             )
                 
             # Record in ledger before placing bet
@@ -193,8 +202,10 @@ class BettingSystem:
                     f"[DRY RUN] Simulated bet placement: "
                     f"Match: {betting_opportunity['event_name']}, "
                     f"Selection: {betting_opportunity['team_name']}, "
-                    f"Stake: Â£{betting_opportunity['stake']}, "
-                    f"Odds: {betting_opportunity['odds']}"
+                    f"Stake: ÃÂ£{betting_opportunity['stake']}, "
+                    f"Odds: {betting_opportunity['odds']}, "
+                    f"Cycle: {betting_opportunity['cycle_number']}, "
+                    f"Bet in cycle: {betting_opportunity['bet_in_cycle']}"
                 )
                 
                 # For dry run, explicitly record bet in repository to mark it as active
@@ -220,8 +231,10 @@ class BettingSystem:
                     f"Match: {betting_opportunity['event_name']}\n"
                     f"Selection: {betting_opportunity['team_name']}\n"
                     f"Selection ID: {betting_opportunity['selection_id']}\n"
-                    f"Stake: Â£{request.stake}\n"
-                    f"Odds: {request.odds}"
+                    f"Stake: ÃÂ£{request.stake}\n"
+                    f"Odds: {request.odds}\n"
+                    f"Cycle: {betting_opportunity['cycle_number']}\n"
+                    f"Bet in cycle: {betting_opportunity['bet_in_cycle']}"
                 )
             return bet_details
                 
@@ -275,22 +288,22 @@ class BettingSystem:
                 # Reset to starting stake for new cycle if target reached
                 initial_stake = await self.config_manager.get_initial_stake()
                 await self.account_repository.reset_to_starting_stake(initial_stake)
-                self.logger.info(f"Target reached! Reset to starting stake (Â£{initial_stake}) for new cycle.")
+                self.logger.info(f"Target reached! Reset to starting stake (ÃÂ£{initial_stake}) for new cycle.")
             elif not settled_bet.get('won', False):
                 # Reset to starting stake after a loss
                 initial_stake = await self.config_manager.get_initial_stake()
                 await self.account_repository.reset_to_starting_stake(initial_stake)
-                self.logger.info(f"Bet lost. Reset to starting stake (Â£{initial_stake}) for new cycle.")
+                self.logger.info(f"Bet lost. Reset to starting stake (ÃÂ£{initial_stake}) for new cycle.")
             
             self.logger.info(
                 f"Successfully settled bet:\n"
                 f"Match: {settled_bet.get('event_name', 'Unknown Event')}\n"
                 f"Selection: {settled_bet.get('team_name', 'Unknown Team')}\n"
                 f"Won: {settled_bet.get('won', False)}\n"
-                f"Gross Profit: Â£{settled_bet.get('gross_profit', 0.0)}\n"
-                f"Commission: Â£{settled_bet.get('commission', 0.0)}\n"
-                f"Net Profit: Â£{settled_bet.get('profit', 0.0)}\n"
-                f"New Balance: Â£{account_status.current_balance}"
+                f"Gross Profit: ÃÂ£{settled_bet.get('gross_profit', 0.0)}\n"
+                f"Commission: ÃÂ£{settled_bet.get('commission', 0.0)}\n"
+                f"Net Profit: ÃÂ£{settled_bet.get('profit', 0.0)}\n"
+                f"New Balance: ÃÂ£{account_status.current_balance}"
             )
             
             return settled_bet
@@ -428,7 +441,7 @@ class BettingSystem:
             initial_stake: Initial stake amount for the new cycle
         """
         try:
-            self.logger.info(f"Resetting entire betting system with initial stake: Â£{initial_stake}")
+            self.logger.info(f"Resetting entire betting system with initial stake: ÃÂ£{initial_stake}")
             
             # Reset account stats (instead of just the balance)
             await self.account_repository.reset_account_stats(initial_stake)
