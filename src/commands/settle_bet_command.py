@@ -6,6 +6,7 @@ Uses real Betfair API results instead of simulation.
 Handles validation, execution, and recording of bet settlements.
 Enhanced with consistent selection ID handling and unified market data retrieval.
 Added 5% Betfair commission calculation on winning bets.
+FIXED: Corrected timeout logic to consider event start time instead of bet placement time.
 """
 
 from dataclasses import dataclass
@@ -348,7 +349,7 @@ class BetSettlementCommand:
 
     async def _check_for_timed_out_bets(self, timeout_hours: int) -> None:
         """
-        Check for bets that have timed out (event should have ended)
+        Check for bets that have timed out based on event start time and in-play status
         
         Args:
             timeout_hours: Number of hours after which to consider an event timed out
@@ -361,23 +362,100 @@ class BetSettlementCommand:
                 return
                 
             now = datetime.now(timezone.utc)
-            timeout_threshold = now - timedelta(hours=timeout_hours)
             
             for bet in active_bets:
-                # Check bet timestamp
-                bet_time = datetime.fromisoformat(bet["timestamp"])
+                market_id = bet["market_id"]
                 
-                if bet_time < timeout_threshold:
-                    # Bet has been active for too long, likely an issue
+                # Get current market status for checking in-play and event start times
+                market_status = await self.betfair_client.get_fresh_market_data(market_id)
+                
+                if not market_status:
+                    self.logger.warning(f"Could not retrieve market status for {market_id}")
+                    continue
+                
+                # Check if market is in-play
+                is_inplay = market_status.get('inplay', False)
+                
+                # Get market start time
+                market_start_time = None
+                try:
+                    if 'marketStartTime' in market_status:
+                        market_start_time = datetime.fromisoformat(
+                            market_status['marketStartTime'].replace('Z', '+00:00')
+                        )
+                    elif 'market_start_time' in bet:
+                        market_start_time = datetime.fromisoformat(
+                            bet['market_start_time'].replace('Z', '+00:00')
+                        )
+                except (ValueError, TypeError) as e:
+                    self.logger.warning(f"Could not parse market start time: {e}")
+                
+                # Calculate timeout conditions based on event status and start time
+                bet_placement_time = datetime.fromisoformat(bet["timestamp"])
+                should_timeout = False
+                timeout_reason = ""
+                
+                if is_inplay and market_start_time:
+                    # If event is in-play, check how long it's been in-play
+                    inplay_duration = now - market_start_time
+                    max_inplay_hours = 4  # Most sports events don't last more than 4 hours
+                    
+                    if inplay_duration.total_seconds() > max_inplay_hours * 3600:
+                        should_timeout = True
+                        timeout_reason = (
+                            f"Event has been in-play for over {max_inplay_hours} hours "
+                            f"({inplay_duration.total_seconds() / 3600:.1f} hours). "
+                            f"Event started at {market_start_time.isoformat()}"
+                        )
+                elif market_start_time:
+                    # If event has not started yet but was scheduled in the past
+                    if market_start_time < now:
+                        # Check how long ago the event should have started
+                        delay = now - market_start_time
+                        max_delay_hours = 6  # Allow up to 6 hours delay for event to start
+                        
+                        if delay.total_seconds() > max_delay_hours * 3600:
+                            should_timeout = True
+                            timeout_reason = (
+                                f"Event was scheduled to start {delay.total_seconds() / 3600:.1f} hours ago "
+                                f"at {market_start_time.isoformat()} but has not started yet"
+                            )
+                    else:
+                        # Event is in the future, check if bet is very old
+                        bet_age = now - bet_placement_time
+                        max_waiting_days = 7  # Allow up to 7 days from bet placement to event
+                        
+                        if bet_age.total_seconds() > max_waiting_days * 24 * 3600:
+                            should_timeout = True
+                            timeout_reason = (
+                                f"Bet is {bet_age.total_seconds() / (24 * 3600):.1f} days old. "
+                                f"Placed at {bet_placement_time.isoformat()}, "
+                                f"event scheduled for {market_start_time.isoformat()}"
+                            )
+                else:
+                    # No market start time available, use bet age as fallback
+                    bet_age = now - bet_placement_time
+                    max_bet_age_days = 3  # Maximum bet age when market time unknown (3 days)
+                    
+                    if bet_age.total_seconds() > max_bet_age_days * 24 * 3600:
+                        should_timeout = True
+                        timeout_reason = (
+                            f"Bet is {bet_age.total_seconds() / (24 * 3600):.1f} days old "
+                            f"and no market start time available. "
+                            f"Placed at {bet_placement_time.isoformat()}"
+                        )
+                
+                # Timeout the bet if any conditions met
+                if should_timeout:
                     self.logger.warning(
-                        f"Bet on market {bet['market_id']} has timed out. "
-                        f"Selection: {bet['selection_id']} ({bet.get('team_name', 'Unknown')}), "
-                        f"Placed at {bet_time.isoformat()}, which is over {timeout_hours} hours ago"
+                        f"Bet on market {market_id} has timed out. "
+                        f"Selection: {bet['selection_id']} ({bet.get('team_name', 'Unknown')}). "
+                        f"Reason: {timeout_reason}"
                     )
                     
-                    # Force settlement as a loss in dry run mode
+                    # Force settlement as a loss
                     request = BetSettlementRequest(
-                        market_id=bet["market_id"],
+                        market_id=market_id,
                         forced_settlement=True,
                         force_won=False,
                         force_profit=0.0
@@ -387,7 +465,7 @@ class BetSettlementCommand:
                     await self.execute(request)
                     
                     self.logger.info(
-                        f"Forced settlement of timed out bet on market {bet['market_id']}"
+                        f"Forced settlement of timed out bet on market {market_id}"
                     )
                     
         except Exception as e:
