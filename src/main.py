@@ -4,6 +4,7 @@ main.py
 Entry point for the betting system with command-line interface.
 Handles initialization, interactive command processing, and graceful shutdown.
 UPDATED: Removed automatic ledger reset to support compound betting strategy.
+UPDATED: Added log rotation and management to control log file size and retention.
 """
 
 import os
@@ -24,6 +25,7 @@ from .repositories.account_repository import AccountRepository
 from .betting_ledger import BettingLedger
 from .config_manager import ConfigManager
 from .command_processor import CommandProcessor
+from .log_manager import LogManager  # Import the new LogManager
 
 # Global variables for shutdown control
 shutdown_event: Optional[asyncio.Event] = None
@@ -44,7 +46,7 @@ async def run_betting_cycle(betting_system: BettingSystem):
         logging.info(
             f"Running betting cycle - Cycle: {cycle_info['current_cycle']}, "
             f"Bet in cycle: {cycle_info['current_bet_in_cycle'] + 1}, "
-            f"Next stake: Â£{next_stake:.2f} (compound strategy)"
+            f"Next stake: £{next_stake:.2f} (compound strategy)"
         )
             
         # Scan for opportunities
@@ -58,8 +60,8 @@ async def run_betting_cycle(betting_system: BettingSystem):
                 logging.info(
                     f"Bet placed - Cycle #{account_status['current_cycle']}, "
                     f"Bet #{account_status['current_bet_in_cycle']} in cycle, "
-                    f"Balance: Â£{account_status['current_balance']:.2f}, "
-                    f"Stake: Â£{bet['stake']:.2f}"
+                    f"Balance: £{account_status['current_balance']:.2f}, "
+                    f"Stake: £{bet['stake']:.2f}"
                 )
     except Exception as e:
         logging.error(f"Error in betting cycle: {str(e)}")
@@ -80,10 +82,10 @@ async def check_results(betting_system: BettingSystem):
             
             logging.info(
                 f"Updated status - Cycle: {status['current_cycle']}, "
-                f"Balance: Â£{status['current_balance']:.2f}, "
+                f"Balance: £{status['current_balance']:.2f}, "
                 f"Total cycles: {status['total_cycles']}, "
-                f"Total money lost: Â£{status['total_money_lost']:.2f}, "
-                f"Total commission paid: Â£{ledger.get('total_commission_paid', 0.0):.2f}"
+                f"Total money lost: £{status['total_money_lost']:.2f}, "
+                f"Total commission paid: £{ledger.get('total_commission_paid', 0.0):.2f}"
             )
     except Exception as e:
         logging.error(f"Error checking results: {str(e)}")
@@ -105,16 +107,16 @@ async def display_status(betting_system: BettingSystem):
         print("="*60)
         print(f"Current Cycle: #{status['current_cycle']}")
         print(f"Current Bet in Cycle: #{status['current_bet_in_cycle']}")
-        print(f"Current Balance: Â£{status['current_balance']:.2f}")
-        print(f"Next Bet Stake: Â£{next_stake:.2f}")
-        print(f"Target Amount: Â£{status['target_amount']:.2f}")
+        print(f"Current Balance: £{status['current_balance']:.2f}")
+        print(f"Next Bet Stake: £{next_stake:.2f}")
+        print(f"Target Amount: £{status['target_amount']:.2f}")
         print(f"Total Cycles Completed: {status['total_cycles']}")
         print(f"Total Bets Placed: {status['total_bets_placed']}")
         print(f"Successful Bets: {status['successful_bets']}")
         print(f"Win Rate: {status['win_rate']:.1f}%")
-        print(f"Total Money Lost: Â£{status['total_money_lost']:.2f}")
-        print(f"Total Commission Paid: Â£{ledger.get('total_commission_paid', 0.0):.2f}")
-        print(f"Highest Balance Reached: Â£{ledger['highest_balance']:.2f}")
+        print(f"Total Money Lost: £{status['total_money_lost']:.2f}")
+        print(f"Total Commission Paid: £{ledger.get('total_commission_paid', 0.0):.2f}")
+        print(f"Highest Balance Reached: £{ledger['highest_balance']:.2f}")
         print("="*60 + "\n")
         
         logging.info("\n" + "="*60)
@@ -122,16 +124,16 @@ async def display_status(betting_system: BettingSystem):
         logging.info("="*60)
         logging.info(f"Current Cycle: #{status['current_cycle']}")
         logging.info(f"Current Bet in Cycle: #{status['current_bet_in_cycle']}")
-        logging.info(f"Current Balance: Â£{status['current_balance']:.2f}")
-        logging.info(f"Next Bet Stake: Â£{next_stake:.2f}")
-        logging.info(f"Target Amount: Â£{status['target_amount']:.2f}")
+        logging.info(f"Current Balance: £{status['current_balance']:.2f}")
+        logging.info(f"Next Bet Stake: £{next_stake:.2f}")
+        logging.info(f"Target Amount: £{status['target_amount']:.2f}")
         logging.info(f"Total Cycles Completed: {status['total_cycles']}")
         logging.info(f"Total Bets Placed: {status['total_bets_placed']}")
         logging.info(f"Successful Bets: {status['successful_bets']}")
         logging.info(f"Win Rate: {status['win_rate']:.1f}%")
-        logging.info(f"Total Money Lost: Â£{status['total_money_lost']:.2f}")
-        logging.info(f"Total Commission Paid: Â£{ledger.get('total_commission_paid', 0.0):.2f}")
-        logging.info(f"Highest Balance Reached: Â£{ledger['highest_balance']:.2f}")
+        logging.info(f"Total Money Lost: £{status['total_money_lost']:.2f}")
+        logging.info(f"Total Commission Paid: £{ledger.get('total_commission_paid', 0.0):.2f}")
+        logging.info(f"Highest Balance Reached: £{ledger['highest_balance']:.2f}")
         logging.info("="*60 + "\n")
     except Exception as e:
         logging.error(f"Error displaying status: {str(e)}")
@@ -271,20 +273,34 @@ async def main():
     print("Loading environment variables...")
     load_dotenv()
     
-    # Setup logging
-    print("Setting up logging...")
+    # Initialize log management before setting up other logging
+    print("Initializing log management...")
+    LogManager.initialize_system_logging(retention_days=3)
+    
+    # Check and truncate existing large log files
+    LogManager.truncate_old_logs('web/logs', retention_days=3)
+    
+    # Setup logging with rotation
+    print("Setting up logging with rotation...")
     # Ensure log directory exists
     log_dir = Path('web/logs')
     log_dir.mkdir(parents=True, exist_ok=True)
     
-    logging.basicConfig(
+    # Set up main logger using LogManager
+    main_logger = LogManager.setup_logger(
+        'main',
+        'web/logs/main.log',
         level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler('web/logs/main.log'),
-            logging.StreamHandler()
-        ]
+        retention_days=3
     )
+    
+    # Set root logger to use main logger's handlers
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    for handler in main_logger.handlers:
+        root_logger.addHandler(handler)
+    
+    logging.info("Logging initialized with 3-day retention")
     
     print("Setting up signal handlers...")
     # Setup signal handlers
@@ -336,6 +352,8 @@ async def main():
         print(f"DEBUG - Account balance: £{account_status.current_balance}")
         print(f"DEBUG - Ledger starting stake: £{ledger_info['starting_stake']}")
         print(f"DEBUG - Ledger highest balance: £{ledger_info['highest_balance']}")
+        print(f"DEBUG - Current cycle: {ledger_info['current_cycle']}")
+        print(f"DEBUG - Current bet in cycle: {ledger_info['current_bet_in_cycle']}")
         if has_previous_profit:
             print(f"DEBUG - Last winning profit: £{ledger_info['last_winning_profit']}")
         
