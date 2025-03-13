@@ -1,20 +1,17 @@
 """
 betting_ledger.py
 
-Handles tracking of betting cycles and performance metrics for the compound betting strategy.
-Maintains a history of bets, cycles, and performance over time.
-Enhanced to record commission amounts and properly track previous bet profits for stake calculation.
-FIXED: Ensures proper cycle management after forced settlements, correctly resetting cycle counters.
-FIXED: Added additional verification steps and transaction locks to prevent race conditions.
+Refactored to use event-sourced approach for bet cycle management.
+Replaces direct state management with state derived from immutable events.
 """
 
-import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
-import aiofiles
+from typing import Dict, Any, Optional
 import asyncio
+
+from .event_store import BettingEventStore
 
 class BettingLedger:
     def __init__(self, data_dir: str = 'web/data/betting'):
@@ -29,115 +26,24 @@ class BettingLedger:
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
         
-        # Initialize file paths
-        self.ledger_file = self.data_dir / 'betting_ledger.json'
-        
-        # In-memory cache of ledger data
-        self._ledger_cache = None
+        # Initialize event store
+        self.event_store = BettingEventStore(data_dir)
         
         # Transaction lock to prevent race conditions
         self._transaction_lock = asyncio.Lock()
+
+    async def get_ledger(self) -> Dict[str, Any]:
+        """Get current ledger data derived from event history"""
+        stats = await self.event_store.get_betting_stats()
         
-        # Ensure storage is initialized
-        self._ensure_storage()
-
-    def _ensure_storage(self) -> None:
-        """Initialize storage file if it doesn't exist (sync operation during init)"""
-        if not self.ledger_file.exists():
-            initial_data = {
-                "starting_stake": 1.0,        # £1 starting stake
-                "current_cycle": 1,           # Cycle number
-                "current_bet_in_cycle": 0,    # Bet number in current cycle
-                "total_cycles": 0,            # Total cycles completed
-                "total_bets": 0,              # Total bets placed
-                "total_wins": 0,              # Total winning bets
-                "total_losses": 0,            # Total losing bets
-                "total_money_lost": 0.0,      # Total money lost (sum of lost stakes)
-                "highest_cycle_reached": 1,   # Highest cycle number reached
-                "highest_balance": 1.0,       # Highest balance reached
-                "cycle_history": [],          # History of completed cycles
-                "total_commission_paid": 0.0, # Total Betfair commission paid
-                "last_winning_profit": 0.0,   # Profit from last winning bet for compound strategy
-                "last_updated": datetime.now(timezone.utc).isoformat()
-            }
-            with open(self.ledger_file, 'w') as f:
-                json.dump(initial_data, f, indent=2)
-            
-            # Initialize cache
-            self._ledger_cache = initial_data.copy()
-        else:
-            # Load existing data into cache during initialization
-            try:
-                with open(self.ledger_file, 'r') as f:
-                    self._ledger_cache = json.load(f)
-                    self.logger.info(f"Initialized cache from existing ledger file")
-            except Exception as e:
-                self.logger.error(f"Failed to load existing ledger during init: {str(e)}")
-                self._ledger_cache = None
-
-    async def _save_json(self, data: Dict) -> None:
-        """Save data to JSON file asynchronously and update cache"""
-        try:
-            # Update the cache first
-            self._ledger_cache = data.copy()
-            
-            # Then save to disk
-            async with aiofiles.open(self.ledger_file, 'w') as f:
-                await f.write(json.dumps(data, indent=2))
-                
-            self.logger.debug(f"Saved ledger data to file and updated cache")
-        except Exception as e:
-            self.logger.error(f"Error saving ledger: {str(e)}")
-            raise
-
-    async def _load_json(self) -> Dict:
-        """Load data from JSON file asynchronously with cache support"""
-        try:
-            # Use cache if available to reduce disk I/O
-            if self._ledger_cache is not None:
-                return self._ledger_cache.copy()
-            
-            # Read from file if cache isn't initialized
-            async with aiofiles.open(self.ledger_file, 'r') as f:
-                content = await f.read()
-                data = json.loads(content)
-                
-                # Update cache
-                self._ledger_cache = data.copy()
-                
-                return data
-        except Exception as e:
-            self.logger.error(f"Error loading ledger: {str(e)}")
-            # Return default structure if file can't be loaded
-            default_data = {
-                "starting_stake": 1.0,
-                "current_cycle": 1,
-                "current_bet_in_cycle": 0,
-                "total_cycles": 0,
-                "total_bets": 0,
-                "total_wins": 0,
-                "total_losses": 0,
-                "total_money_lost": 0.0,
-                "highest_cycle_reached": 1,
-                "highest_balance": 1.0,
-                "cycle_history": [],
-                "total_commission_paid": 0.0,
-                "last_winning_profit": 0.0,
-                "last_updated": datetime.now(timezone.utc).isoformat()
-            }
-            
-            # Set cache to default data
-            self._ledger_cache = default_data.copy()
-            
-            return default_data
-
-    async def get_ledger(self) -> Dict:
-        """Get current ledger data"""
-        return await self._load_json()
+        # Add timestamp
+        stats["last_updated"] = datetime.now(timezone.utc).isoformat()
+        
+        return stats
 
     async def record_bet_placed(self, bet_details: Dict) -> Dict:
         """
-        Record a new bet placement in the ledger
+        Record a new bet placement as an event
         
         Args:
             bet_details: Details of the placed bet
@@ -148,30 +54,34 @@ class BettingLedger:
         try:
             # Use transaction lock to prevent race conditions
             async with self._transaction_lock:
-                ledger = await self._load_json()
+                # Create event data from bet details
+                event_data = {
+                    "market_id": bet_details.get("market_id"),
+                    "event_id": bet_details.get("event_id"),
+                    "event_name": bet_details.get("event_name"),
+                    "selection_id": bet_details.get("selection_id"),
+                    "team_name": bet_details.get("team_name", "Unknown"),
+                    "odds": bet_details.get("odds", 0.0),
+                    "stake": bet_details.get("stake", 0.0),
+                    "timestamp": bet_details.get("timestamp", datetime.now(timezone.utc).isoformat())
+                }
                 
-                # Increment bet counters
-                ledger["current_bet_in_cycle"] += 1
-                ledger["total_bets"] += 1
+                # Add bet placement event
+                await self.event_store.add_event("BET_PLACED", event_data)
                 
-                # Add timestamp for cycle start if this is the first bet in cycle
-                if ledger["current_bet_in_cycle"] == 1:
-                    ledger["cycle_start_time"] = bet_details.get("timestamp", datetime.now(timezone.utc).isoformat())
-                
-                # Add cycle information to bet details for tracking
-                bet_details["cycle_number"] = ledger["current_cycle"]
-                bet_details["bet_in_cycle"] = ledger["current_bet_in_cycle"]
-                
-                ledger["last_updated"] = datetime.now(timezone.utc).isoformat()
-                await self._save_json(ledger)
+                # Get current cycle info
+                current_cycle = await self.event_store.get_current_cycle()
+                current_bet_in_cycle = await self.event_store.get_current_bet_in_cycle()
                 
                 self.logger.info(
-                    f"Recorded bet placement - Cycle: {ledger['current_cycle']}, "
-                    f"Bet #{ledger['current_bet_in_cycle']} in cycle, "
+                    f"Recorded bet placement - Cycle: {current_cycle}, "
+                    f"Bet #{current_bet_in_cycle} in cycle, "
                     f"Stake: £{bet_details['stake']}, Odds: {bet_details['odds']}"
                 )
                 
-                return ledger
+                # Return updated ledger data
+                return await self.get_ledger()
+                
         except Exception as e:
             self.logger.error(f"Error recording bet placement: {str(e)}")
             raise
@@ -185,7 +95,7 @@ class BettingLedger:
         commission: float = 0.0
     ) -> Dict:
         """
-        Record a bet result and update the ledger
+        Record a bet result as an event
         
         Args:
             bet_details: Details of the bet
@@ -200,154 +110,67 @@ class BettingLedger:
         try:
             # Use transaction lock to prevent race conditions
             async with self._transaction_lock:
-                ledger = await self._load_json()
-                
                 # Get bet details for logging
                 market_id = bet_details.get("market_id", "Unknown")
-                selection = bet_details.get("team_name", "Unknown")
+                selection_id = bet_details.get("selection_id", "Unknown")
+                team_name = bet_details.get("team_name", "Unknown")
                 stake = bet_details.get("stake", 0.0)
                 odds = bet_details.get("odds", 0.0)
                 gross_profit = bet_details.get("gross_profit", profit + commission)
                 
-                # FIXED: Make sure cycle information from the bet details is consistent with the ledger
-                # This helps when dealing with forced settlements that might have stale cycle information
-                bet_cycle = bet_details.get("cycle_number", ledger["current_cycle"])
-                bet_number = bet_details.get("bet_in_cycle", ledger["current_bet_in_cycle"])
-                
-                # Log the cycle information before any changes for debugging
-                self.logger.info(
-                    f"BEFORE update - Cycle: {ledger['current_cycle']}, "
-                    f"Bet in cycle: {ledger['current_bet_in_cycle']}, "
-                    f"Processing bet result - Bet cycle: {bet_cycle}, "
-                    f"Bet number: {bet_number}, Won: {won}"
-                )
+                # Prepare event data
+                event_data = {
+                    "market_id": market_id,
+                    "selection_id": selection_id,
+                    "team_name": team_name,
+                    "stake": stake,
+                    "odds": odds,
+                    "new_balance": new_balance
+                }
                 
                 if won:
-                    ledger["total_wins"] += 1
-                    ledger["total_commission_paid"] = ledger.get("total_commission_paid", 0.0) + commission
+                    # Add win-specific data
+                    event_data.update({
+                        "gross_profit": gross_profit,
+                        "commission": commission,
+                        "net_profit": profit
+                    })
                     
-                    # Update highest balance if needed
-                    if new_balance > ledger["highest_balance"]:
-                        ledger["highest_balance"] = new_balance
-                    
-                    # Set the profit for the next bet's stake (compound strategy)
-                    # Make sure we're using the NET profit (after commission)
-                    ledger["last_winning_profit"] = profit
+                    # Add bet won event
+                    await self.event_store.add_event("BET_WON", event_data)
                     
                     self.logger.info(
-                        f"Bet WON - Cycle: {ledger['current_cycle']}, "
-                        f"Bet #{ledger['current_bet_in_cycle']} in cycle, "
-                        f"Selection: {selection}, Stake: £{stake}, "
+                        f"Bet WON - Selection: {team_name}, Stake: £{stake}, "
                         f"Odds: {odds}, Gross Profit: £{gross_profit}, "
-                        f"Commission: £{commission}, Net Profit: £{profit}, "
-                        f"New Balance: £{new_balance}, "
-                        f"Next Stake Set: £{profit}"
+                        f"Commission: £{commission}, Net Profit: £{profit}"
                     )
                 else:
-                    # Log details before updating cycle information
+                    # Add bet lost event
+                    await self.event_store.add_event("BET_LOST", event_data)
+                    
                     self.logger.info(
-                        f"Bet LOST - Current cycle: {ledger['current_cycle']}, "
-                        f"Current bet in cycle: {ledger['current_bet_in_cycle']}, "
-                        f"About to increment cycle and reset bet counter"
-                    )
-                    
-                    ledger["total_losses"] += 1
-                    ledger["total_money_lost"] += stake
-                    
-                    # Reset the last winning profit
-                    ledger["last_winning_profit"] = 0.0
-                    
-                    # Record completed cycle
-                    cycle_record = {
-                        "cycle_number": ledger["current_cycle"],
-                        "bets_in_cycle": ledger["current_bet_in_cycle"],
-                        "start_time": ledger.get("cycle_start_time", "Unknown"),
-                        "end_time": datetime.now(timezone.utc).isoformat(),
-                        "final_stake": stake,
-                        "result": "Lost"
-                    }
-                    ledger["cycle_history"].append(cycle_record)
-                    
-                    # CRITICAL FIX: Explicitly start new cycle after a loss with proper increment
-                    old_cycle = ledger["current_cycle"]
-                    ledger["current_cycle"] += 1
-                    ledger["total_cycles"] += 1
-                    ledger["current_bet_in_cycle"] = 0
-                    
-                    # FIXED: Remove the cycle start time for the new cycle
-                    if "cycle_start_time" in ledger:
-                        del ledger["cycle_start_time"]
-                    
-                    # Update highest cycle if needed
-                    if ledger["current_cycle"] > ledger["highest_cycle_reached"]:
-                        ledger["highest_cycle_reached"] = ledger["current_cycle"]
-                        
-                    self.logger.info(
-                        f"Bet LOST - Cycle {old_cycle} ended, "
-                        f"Selection: {selection}, Lost stake: £{stake}, "
-                        f"INCREMENTED to cycle #{ledger['current_cycle']}, "
-                        f"RESET bet counter to {ledger['current_bet_in_cycle']}"
+                        f"Bet LOST - Selection: {team_name}, Lost stake: £{stake}"
                     )
                 
-                ledger["last_updated"] = datetime.now(timezone.utc).isoformat()
-                await self._save_json(ledger)
+                # Get updated cycle information
+                current_cycle = await self.event_store.get_current_cycle()
+                current_bet_in_cycle = await self.event_store.get_current_bet_in_cycle()
                 
-                # FIXED: After saving, verify that the cycle information is consistent
-                # This is a sanity check to ensure the ledger was updated correctly
-                post_update_ledger = await self._load_json()
-                
-                # Log the cycle information after update for debugging
                 self.logger.info(
-                    f"AFTER update - Cycle: {post_update_ledger['current_cycle']}, "
-                    f"Bet in cycle: {post_update_ledger['current_bet_in_cycle']}, "
-                    f"Won: {won}"
+                    f"Current cycle: {current_cycle}, "
+                    f"Bet in cycle: {current_bet_in_cycle}"
                 )
                 
-                if not won and post_update_ledger["current_bet_in_cycle"] != 0:
-                    self.logger.warning(
-                        f"CRITICAL ERROR: Cycle inconsistency detected after loss! "
-                        f"Expected bet in cycle to be 0, got {post_update_ledger['current_bet_in_cycle']}. "
-                        f"Forcing correction."
-                    )
-                    
-                    # Force correction
-                    post_update_ledger["current_bet_in_cycle"] = 0
-                    await self._save_json(post_update_ledger)
-                    
-                    # Verify correction was applied
-                    verify_ledger = await self._load_json()
-                    self.logger.info(
-                        f"VERIFICATION after correction - Cycle: {verify_ledger['current_cycle']}, "
-                        f"Bet in cycle: {verify_ledger['current_bet_in_cycle']}"
-                    )
+                # Return updated ledger data
+                return await self.get_ledger()
                 
-                # If not won, double-check that cycle was incremented
-                if not won and post_update_ledger["current_cycle"] == old_cycle:
-                    self.logger.warning(
-                        f"CRITICAL ERROR: Cycle not incremented after loss! "
-                        f"Expected cycle to be {old_cycle + 1}, still at {post_update_ledger['current_cycle']}. "
-                        f"Forcing cycle increment."
-                    )
-                    
-                    # Force cycle increment
-                    post_update_ledger["current_cycle"] = old_cycle + 1
-                    await self._save_json(post_update_ledger)
-                    
-                    # Verify cycle increment was applied
-                    verify_ledger = await self._load_json()
-                    self.logger.info(
-                        f"VERIFICATION after cycle correction - Cycle: {verify_ledger['current_cycle']}, "
-                        f"Bet in cycle: {verify_ledger['current_bet_in_cycle']}"
-                    )
-                
-                return post_update_ledger
         except Exception as e:
             self.logger.error(f"Error recording bet result: {str(e)}")
             raise
 
     async def check_target_reached(self, balance: float, target: float) -> bool:
         """
-        Check if target amount has been reached and handle cycle completion
+        Check if target amount has been reached and record target reached event if so
         
         Args:
             balance: Current account balance
@@ -358,45 +181,28 @@ class BettingLedger:
         """
         try:
             if balance >= target:
-                # Target reached - record successful cycle
+                # Target reached - record event
                 async with self._transaction_lock:
-                    ledger = await self._load_json()
-                    
-                    cycle_record = {
-                        "cycle_number": ledger["current_cycle"],
-                        "bets_in_cycle": ledger["current_bet_in_cycle"],
-                        "start_time": ledger.get("cycle_start_time", "Unknown"),
-                        "end_time": datetime.now(timezone.utc).isoformat(),
-                        "final_balance": balance,
-                        "result": "Target Reached"
+                    event_data = {
+                        "balance": balance,
+                        "target": target,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
                     }
-                    ledger["cycle_history"].append(cycle_record)
-                    ledger["total_cycles"] += 1
                     
-                    # Reset for new cycle
-                    old_cycle = ledger["current_cycle"]
-                    ledger["current_cycle"] += 1
-                    ledger["current_bet_in_cycle"] = 0
-                    ledger["last_winning_profit"] = 0.0  # Reset winning profit for new cycle
+                    await self.event_store.add_event("TARGET_REACHED", event_data)
                     
-                    # FIXED: Remove the cycle start time for the new cycle
-                    if "cycle_start_time" in ledger:
-                        del ledger["cycle_start_time"]
-                    
-                    # Update highest cycle if needed
-                    if ledger["current_cycle"] > ledger["highest_cycle_reached"]:
-                        ledger["highest_cycle_reached"] = ledger["current_cycle"]
-                        
-                    await self._save_json(ledger)
+                    # Get updated cycle information
+                    current_cycle = await self.event_store.get_current_cycle()
                     
                     self.logger.info(
                         f"TARGET REACHED! Final balance: £{balance}, "
-                        f"Completed cycle {old_cycle}, starting new cycle: {ledger['current_cycle']}"
+                        f"Starting new cycle: {current_cycle}"
                     )
                     
                     return True
             
             return False
+            
         except Exception as e:
             self.logger.error(f"Error checking target: {str(e)}")
             return False
@@ -404,35 +210,27 @@ class BettingLedger:
     async def get_current_cycle_info(self) -> Dict:
         """Get information about the current cycle"""
         try:
-            ledger = await self._load_json()
-            
-            # FIXED: Add additional verification of cycle state
-            if ledger["current_bet_in_cycle"] < 0:
-                self.logger.warning(
-                    f"Invalid bet in cycle value: {ledger['current_bet_in_cycle']}. Correcting to 0."
-                )
-                async with self._transaction_lock:
-                    ledger["current_bet_in_cycle"] = 0
-                    await self._save_json(ledger)
+            stats = await self.event_store.get_betting_stats()
             
             # Log cycle info for debugging
             self.logger.debug(
-                f"Current cycle info - Cycle: {ledger['current_cycle']}, "
-                f"Bet in cycle: {ledger['current_bet_in_cycle']}"
+                f"Current cycle info - Cycle: {stats['current_cycle']}, "
+                f"Bet in cycle: {stats['current_bet_in_cycle']}"
             )
             
             return {
-                "current_cycle": ledger["current_cycle"],
-                "current_bet_in_cycle": ledger["current_bet_in_cycle"],
-                "total_cycles": ledger["total_cycles"],
-                "total_bets": ledger["total_bets"],
-                "total_wins": ledger["total_wins"],
-                "total_losses": ledger["total_losses"],
-                "total_money_lost": ledger["total_money_lost"],
-                "highest_cycle_reached": ledger["highest_cycle_reached"],
-                "highest_balance": ledger["highest_balance"],
-                "total_commission_paid": ledger.get("total_commission_paid", 0.0)
+                "current_cycle": stats["current_cycle"],
+                "current_bet_in_cycle": stats["current_bet_in_cycle"],
+                "total_cycles": stats["total_cycles"],
+                "total_bets": stats["total_bets"],
+                "total_wins": stats["total_wins"],
+                "total_losses": stats["total_losses"],
+                "total_money_lost": stats["total_money_lost"],
+                "highest_cycle_reached": stats["highest_cycle_reached"],
+                "highest_balance": stats["highest_balance"],
+                "total_commission_paid": stats["total_commission_paid"]
             }
+            
         except Exception as e:
             self.logger.error(f"Error getting cycle info: {str(e)}")
             # Return default info if error occurs
@@ -458,19 +256,11 @@ class BettingLedger:
             Stake amount for the next bet
         """
         try:
-            ledger = await self._load_json()
-            
-            # FIXED: Add sanity check for cycle state
-            if ledger["current_bet_in_cycle"] < 0:
-                self.logger.warning(
-                    f"Invalid bet in cycle value detected: {ledger['current_bet_in_cycle']}. Correcting to 0."
-                )
-                async with self._transaction_lock:
-                    ledger["current_bet_in_cycle"] = 0
-                    await self._save_json(ledger)
+            # Get current ledger information
+            ledger = await self.get_ledger()
             
             # Check if we have a previous winning profit to use
-            last_winning_profit = ledger.get("last_winning_profit", 0.0)
+            last_winning_profit = await self.event_store.get_last_winning_profit()
             
             if last_winning_profit > 0:
                 # We have a previous winning profit, use it regardless of bet cycle
@@ -478,7 +268,7 @@ class BettingLedger:
                 return last_winning_profit
                     
             # Otherwise, use the initial stake
-            initial_stake = ledger["starting_stake"]
+            initial_stake = ledger.get("starting_stake", 1.0)
             self.logger.info(f"Using initial stake: £{initial_stake:.2f} (no previous winning profit)")
             return initial_stake
         
@@ -501,30 +291,13 @@ class BettingLedger:
             self.logger.info(f"Resetting betting ledger to initial state with stake: £{starting_stake}")
             
             async with self._transaction_lock:
-                initial_data = {
-                    "starting_stake": starting_stake,
-                    "current_cycle": 1,
-                    "current_bet_in_cycle": 0,
-                    "total_cycles": 0,
-                    "total_bets": 0,
-                    "total_wins": 0,
-                    "total_losses": 0,
-                    "total_money_lost": 0.0,
-                    "highest_cycle_reached": 1,
-                    "highest_balance": starting_stake,
-                    "cycle_history": [],
-                    "total_commission_paid": 0.0,
-                    "last_winning_profit": 0.0,
-                    "last_updated": datetime.now(timezone.utc).isoformat()
-                }
+                # Reset the event store
+                await self.event_store.reset_events(starting_stake)
                 
-                # Reset the cache
-                self._ledger_cache = initial_data.copy()
-                
-                await self._save_json(initial_data)
                 self.logger.info("Betting ledger reset successfully")
                 
-                return initial_data
+                # Return updated ledger data
+                return await self.get_ledger()
             
         except Exception as e:
             self.logger.error(f"Error resetting ledger: {str(e)}")

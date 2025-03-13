@@ -1,129 +1,94 @@
-Here's the raw Markdown text that you can copy directly:
+# Event-Sourced Betting Cycle Management
 
-```markdown
-# Betfair Football Compound Betting System
+## Introduction
 
-A Python-based system that interfaces with the Betfair API to execute a compound betting strategy, focusing on Match Odds markets for football matches.
+This refactoring introduces an event-sourced approach to betting cycle management to solve issues with inconsistent cycle tracking. The core problem with the previous implementation was its reliance on direct state manipulation, which led to race conditions and ambiguous cycle state.
 
-## Overview
+## Key Components
 
-This system implements an automated betting strategy that analyzes Betfair football markets to identify betting opportunities based on specific selection criteria. It uses context-aware team mapping, comprehensive error handling, and asynchronous operations to ensure reliable market analysis and bet placement.
+### 1. Event Store (`src/event_store.py`)
 
-## Selection Criteria & Betting Strategy
+The central component that stores all betting events and provides methods to derive system state from event history.
 
-The system employs a specific set of criteria to identify betting opportunities:
+- Events are immutable and append-only
+- State is calculated on-demand by replaying events
+- Supports event types: BET_PLACED, BET_WON, BET_LOST, TARGET_REACHED, SYSTEM_RESET
 
-- **Odds Range**: Targets selections with odds between 3.0 and 4.0 (configurable)
-- **Liquidity Requirements**: Ensures the market has sufficient liquidity (1.1x the stake amount)
-- **Market Status**: Only considers pre-game markets (not in-play)
-- **Active Bet Limitation**: Only places one bet at a time (no concurrent active bets)
-- **Compound Strategy**: The system uses available balance as the stake amount, implementing a compound betting approach
+### 2. Betting Ledger (`src/betting_ledger.py`)
 
-### Where Selection Logic is Implemented
+Refactored to use the event store for state management instead of direct file manipulation:
 
-The core selection logic is implemented in the following files:
+- Now delegates state management to the event store
+- Adds events for each bet placement and result
+- Provides a consistent API for other system components
 
-- `src/commands/market_analysis_command.py`: 
-  - `validate_market_criteria()` - Validates if markets meet betting criteria
-  - `execute()` - Analyzes markets and identifies betting opportunities
+### 3. Command Classes
 
-- `src/betting_system.py`:
-  - `scan_markets()` - Orchestrates the market scanning process
+Updated to work with the event-sourced approach:
 
-- `src/selection_mapper.py`:
-  - Provides context-aware team name mapping for consistent selection identification
+- `place_bet_command.py` - Records BET_PLACED events
+- `settle_bet_command.py` - Records BET_WON or BET_LOST events
+- `market_analysis_command.py` - Uses derived state for decision making
 
-## System Architecture
+### 4. Betting System (`src/betting_system.py`)
 
-The system is built using several design patterns for maintainability and testability:
+Main coordinator that uses event-derived state for all cycle-related operations.
 
-- **Command Pattern**: Separates operations into discrete commands (market analysis, bet placement, settlement)
-- **Repository Pattern**: Abstracts data access for bets and account information
-- **Dependency Injection**: Components receive their dependencies for better testability
+## How Bet Cycles Work Now
 
-### Key Components
+The system now follows a simple, explicit rule for cycle management:
 
-- `BettingSystem`: Main orchestrator that coordinates operations
-- `BetfairClient`: Handles API communication with Betfair
-- `MarketAnalysisCommand`: Analyzes markets for betting opportunities
-- `PlaceBetCommand`: Handles bet placement operations
-- `BetSettlementCommand`: Manages bet settlement
-- `SelectionMapper`: Maintains context-aware mappings between selection IDs and team names
-- `BetRepository` & `AccountRepository`: Handle persistent storage of betting data
+1. Each bet placement is recorded as a BET_PLACED event
+2. A won bet is recorded as a BET_WON event
+3. A lost bet is recorded as a BET_LOST event, which implicitly ends the cycle
+4. Target reached is recorded as a TARGET_REACHED event, which also ends the cycle
+5. Current cycle is calculated as (total number of BET_LOST and TARGET_REACHED events) + 1
+6. Bet number in cycle is calculated by counting BET_PLACED events since the last cycle reset
 
-## Error Handling & Safety Features
+## Key Advantages
 
-The system implements comprehensive error handling and safety features:
+1. **Simplified Logic**: Cycle management has a single source of truth (the event store)
+2. **Deterministic State**: Cycle state can always be rebuilt from event history
+3. **Audit Trail**: Complete history of all betting actions preserved
+4. **No Race Conditions**: Events are added sequentially with proper locking
+5. **Consistency**: Cycle tracking will remain consistent even after crashes or errors
 
-- **Dry Run Mode**: Default mode that simulates betting without placing actual bets
-- **Comprehensive Logging**: Each component maintains detailed logs
-- **Exception Handling**: Try/catch blocks with detailed error reporting
-- **Validation**: Multiple validation steps before bet placement
-- **Graceful Shutdown**: Proper cleanup of resources during shutdown
+## Concrete Example
 
-## System Requirements
+Starting from scratch:
 
-### System-Level Dependencies
-Before installing Python packages, ensure you have the necessary system-level SSL dependencies:
-```bash
-sudo apt-get update
-sudo apt-get install python3-dev libffi-dev libssl-dev
+1. System initialized with cycle = 1
+2. First bet placed: BET_PLACED added
+   - Current cycle: 1
+   - Bet in cycle: 1
+3. First bet wins: BET_WON added
+   - Current cycle: still 1
+   - Bet in cycle: still 1
+   - Last winning profit stored
+4. Second bet placed: BET_PLACED added
+   - Current cycle: still 1
+   - Bet in cycle: now 2
+5. Second bet loses: BET_LOST added
+   - Current cycle: incremented to 2
+   - Bet in cycle: reset to 0
+   - Last winning profit reset to 0
+
+After a reset or system restart, reading the event stream would rebuild the exact same state.
+
+## Test Scenarios
+
+### Scenario 1: Winning, then losing
+
+```
+[BET_PLACED] -> [BET_WON] -> [BET_PLACED] -> [BET_LOST]
 ```
 
-### Python Setup
-1. Create and activate a virtual environment:
-```bash
-python3 -m venv venv
-source venv/bin/activate
+After all these events, the system will be in cycle 2, with 0 bets in the current cycle, and no last winning profit.
+
+### Scenario 2: Three consecutive losses
+
+```
+[BET_PLACED] -> [BET_LOST] -> [BET_PLACED] -> [BET_LOST] -> [BET_PLACED] -> [BET_LOST]
 ```
 
-2. Install required packages:
-```bash
-pip install -r requirements.txt
-```
-
-## Configuration
-1. Copy the example environment file:
-```bash
-cp .env.example .env
-```
-
-2. Update the `.env` file with your Betfair credentials:
-```
-BETFAIR_USERNAME=your_username
-BETFAIR_PASSWORD=your_password
-BETFAIR_APP_KEY=your_app_key
-BETFAIR_CERT_FILE=path_to_cert
-BETFAIR_KEY_FILE=path_to_key
-```
-
-## Running the System
-Run the system using the Python module flag:
-```bash
-python3 -m src.main
-```
-
-Note: The system defaults to dry run mode for safety.
-
-## Project Structure
-```
-project/
-├── src/             # Source code
-│   ├── commands/    # Command pattern implementations
-│   │   ├── market_analysis_command.py  # Market analysis logic
-│   │   ├── place_bet_command.py        # Bet placement logic
-│   │   └── settle_bet_command.py       # Bet settlement logic
-│   ├── repositories/# Data storage implementations
-│   │   ├── account_repository.py       # Account data management
-│   │   └── bet_repository.py           # Bet data management
-│   ├── betfair_client.py               # Betfair API client
-│   ├── betting_system.py               # Main system orchestrator
-│   ├── main.py                         # Entry point
-│   └── selection_mapper.py             # Team name mapping logic
-├── config/          # Configuration files
-├── data/           # Data storage
-    └── betting/    # Betting data files
-```
-```
-
-You can now copy this text directly, including all the Markdown formatting.
+After all these events, the system will be in cycle 4, with 0 bets in the current cycle.

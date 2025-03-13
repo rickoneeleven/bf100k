@@ -1,17 +1,13 @@
 """
 market_analysis_command.py
 
-Improved Command pattern implementation for market analysis operations.
+Command pattern implementation for market analysis operations, refactored to work with event-sourced approach.
 Handles validation and analysis of betting markets according to strategy criteria.
-Completely refactored to ensure consistent market data retrieval and odds values
-to prevent discrepancies between initial scan and confirmation.
-Updated to use the compound betting strategy with the betting ledger.
-MODIFIED: Selection criteria changed to only bet on draws with higher odds than both teams.
 """
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Optional, Tuple
 import logging
 import asyncio
 
@@ -45,6 +41,7 @@ class MarketAnalysisCommand:
         self.account_repository = account_repository
         self.selection_mapper = SelectionMapper()
         self.config_manager = config_manager
+        
         # Use provided betting ledger or create a new one if none was provided
         self.betting_ledger = betting_ledger if betting_ledger else BettingLedger()
         
@@ -67,7 +64,7 @@ class MarketAnalysisCommand:
         Returns: (meets_criteria: bool, reason: str)
         """
         try:
-            # Only check liquidity requirement (removed odds range check)
+            # Check liquidity requirement
             if available_volume < required_stake * request.liquidity_factor:
                 return False, f"liquidity {available_volume:.2f} < required {required_stake * request.liquidity_factor:.2f}"
                 
@@ -111,7 +108,7 @@ class MarketAnalysisCommand:
                 # Add to runner details
                 runner_details.append(
                     f"{team_name} (ID: {selection_id}, Priority: {sort_priority}, "
-                    f"Win: {back_price} / Available: Â£{back_size})"
+                    f"Win: {back_price} / Available: £{back_size})"
                 )
             
             # Log the full market details
@@ -175,10 +172,10 @@ class MarketAnalysisCommand:
             # Log detailed market information
             await self._log_market_details(market_id, event_name, runners)
             
-            # Get the correct stake amount from the betting ledger
+            # Get the correct stake amount from the event-sourced betting ledger
             stake_amount = await self.betting_ledger.get_next_stake()
             
-            self.logger.info(f"Using stake amount: Â£{stake_amount} for next bet (compound strategy)")
+            self.logger.info(f"Using stake amount: £{stake_amount} for next bet (compound strategy)")
             
             # Find the Draw selection and team runners
             draw_runner = None
@@ -245,7 +242,7 @@ class MarketAnalysisCommand:
                     f"Found betting opportunity on Draw: {event_name}, "
                     f"Odds: {draw_odds}, "
                     f"Selection ID: {draw_runner.get('selectionId')}, "
-                    f"Stake: Â£{stake_amount}"
+                    f"Stake: £{stake_amount}"
                 )
                 
                 return await self._create_betting_opportunity(
@@ -313,18 +310,24 @@ class MarketAnalysisCommand:
                 team_name=team_name
             )
             
+            # Get current cycle information from event-sourced ledger
+            cycle_info = await self.betting_ledger.get_current_cycle_info()
+            
             opportunity = {
                 "market_id": market_id,
                 "event_id": event_id,
                 "selection_id": selection_id,
                 "team_name": team_name,
                 "event_name": event_name,
-                "sort_priority": sort_priority,  # Include sort priority for consistent ordering
+                "sort_priority": sort_priority,  
                 "competition": market.get('competition', {}).get('name', 'Unknown Competition'),
                 "odds": odds,
                 "stake": stake,
                 "available_volume": available_volume,
                 "market_start_time": market_start_time,
+                # Add cycle info from event-sourced state
+                "cycle_number": cycle_info["current_cycle"],
+                "bet_in_cycle": cycle_info["current_bet_in_cycle"] + 1,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
@@ -332,7 +335,8 @@ class MarketAnalysisCommand:
             self.logger.info(
                 f"Created betting opportunity: Market: {market_id}, Event: {event_name}, "
                 f"Selection: {team_name} (ID: {selection_id}, Priority: {sort_priority}), "
-                f"Odds: {odds}, Stake: Â£{stake}"
+                f"Odds: {odds}, Stake: £{stake}, "
+                f"Cycle: {cycle_info['current_cycle']}, Bet: {cycle_info['current_bet_in_cycle'] + 1}"
             )
             
             return opportunity
@@ -354,7 +358,7 @@ class MarketAnalysisCommand:
 
     async def analyze_markets(self, request: MarketAnalysisRequest) -> Optional[Dict]:
         """
-        Analyze available markets for betting opportunities with enhanced selection mapping
+        Analyze available markets for betting opportunities
         
         Args:
             request: Market analysis request parameters

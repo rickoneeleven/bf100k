@@ -1,18 +1,8 @@
 """
 betting_system.py
 
-Improved betting system that coordinates betting operations using the command pattern.
-Handles async coordination between client, repositories, and commands.
-Updates include:
-- Real result integration instead of simulation
-- Fixed odds mapping between initial market discovery and active bet display
-- Improved selection diversity with continuous market checking
-- Configurable parameters
-- More robust error handling and logging
-- Updated to ensure consistent market data retrieval
-- Added 5% Betfair commission handling
-- Updated to use compound betting strategy based on previous bet profit
-- FIXED: Proper cycle tracking to ensure cycles increment correctly after lost bets
+Main betting system coordinator using event-sourced approach.
+Handles coordination between client, repositories, event store, and commands.
 """
 
 import logging
@@ -27,6 +17,7 @@ from .commands.settle_bet_command import BetSettlementCommand, BetSettlementRequ
 from .repositories.bet_repository import BetRepository
 from .repositories.account_repository import AccountRepository
 from .betting_ledger import BettingLedger
+from .event_store import BettingEventStore
 from .config_manager import ConfigManager
 
 class BettingSystem:
@@ -40,7 +31,11 @@ class BettingSystem:
         self.betfair_client = betfair_client
         self.bet_repository = bet_repository
         self.account_repository = account_repository
+        
+        # Initialize event store and ledger with same data directory
+        self.event_store = BettingEventStore()
         self.betting_ledger = BettingLedger()
+        
         self.config_manager = config_manager
         
         # Load system configuration
@@ -53,21 +48,22 @@ class BettingSystem:
             bet_repository,
             account_repository,
             config_manager,
-            self.betting_ledger  # Pass the same betting ledger instance
+            self.betting_ledger
         )
         
         self.place_bet = PlaceBetCommand(
             betfair_client,
             bet_repository,
             account_repository,
-            self.betting_ledger  # Pass the same betting ledger instance
+            self.betting_ledger
         )
         
         self.settle_bet = BetSettlementCommand(
             betfair_client,
             bet_repository,
             account_repository,
-            config_manager
+            config_manager,
+            self.betting_ledger
         )
         
         # Setup logging
@@ -94,16 +90,14 @@ class BettingSystem:
                 self.logger.info("Active bet exists - skipping market scan")
                 return None
             
-            # Get current cycle info for logging
+            # Get current cycle info and next stake from event-derived state
             cycle_info = await self.betting_ledger.get_current_cycle_info()
-            
-            # Get next stake using compound strategy
             next_stake = await self.betting_ledger.get_next_stake()
             
             self.logger.info(
                 f"Scanning markets - Cycle #{cycle_info['current_cycle']}, "
                 f"Bet #{cycle_info['current_bet_in_cycle'] + 1} in cycle, "
-                f"Next stake: ÃÂ£{next_stake:.2f} (compound strategy)"
+                f"Next stake: £{next_stake:.2f} (compound strategy)"
             )
             
             # Execute market analysis with polling
@@ -117,8 +111,8 @@ class BettingSystem:
                         f"Selection: {betting_opportunity['team_name']}\n"
                         f"Selection ID: {betting_opportunity['selection_id']}\n"
                         f"Odds: {betting_opportunity['odds']}\n"
-                        f"Stake: ÃÂ£{betting_opportunity['stake']}\n"
-                        f"Available Volume: ÃÂ£{betting_opportunity['available_volume']}"
+                        f"Stake: £{betting_opportunity['stake']}\n"
+                        f"Available Volume: £{betting_opportunity['available_volume']}"
                     )
                 return betting_opportunity
             
@@ -131,7 +125,7 @@ class BettingSystem:
 
     async def place_bet_order(self, betting_opportunity: Dict) -> Optional[Dict]:
         """
-        Place a bet based on identified opportunity with enhanced selection mapping
+        Place a bet based on identified opportunity
         
         Args:
             betting_opportunity: Dict containing betting opportunity details
@@ -140,7 +134,7 @@ class BettingSystem:
             Dict containing bet details if successful, None otherwise
         """
         try:
-            # Ensure we have all required fields with proper selection IDs
+            # Ensure we have all required fields
             if 'event_id' not in betting_opportunity:
                 self.logger.warning("Missing event_id in betting opportunity. Using market_id as fallback.")
                 betting_opportunity['event_id'] = betting_opportunity['market_id']
@@ -177,7 +171,7 @@ class BettingSystem:
             if 'market_start_time' not in betting_opportunity and 'marketStartTime' in betting_opportunity:
                 betting_opportunity['market_start_time'] = betting_opportunity['marketStartTime']
                
-            # FIXED: Always get the latest cycle information from the ledger before placing the bet
+            # Always get the latest cycle information from the event store-derived state
             # This ensures the cycle information is correct, especially after a previous bet has been lost
             cycle_info = await self.betting_ledger.get_current_cycle_info()
             betting_opportunity['cycle_number'] = cycle_info['current_cycle']
@@ -189,28 +183,28 @@ class BettingSystem:
                 f"Selection ID: {betting_opportunity['selection_id']}, "
                 f"Team: '{betting_opportunity['team_name']}', "
                 f"Odds: {betting_opportunity['odds']}, "
-                f"Stake: ÃÂ£{betting_opportunity['stake']}, "
+                f"Stake: £{betting_opportunity['stake']}, "
                 f"Cycle: {betting_opportunity['cycle_number']}, "
                 f"Bet in cycle: {betting_opportunity['bet_in_cycle']}"
             )
                 
-            # Record in ledger before placing bet
-            await self.betting_ledger.record_bet_placed(betting_opportunity)
-            
             if self.dry_run:
                 self.logger.info(
                     f"[DRY RUN] Simulated bet placement: "
                     f"Match: {betting_opportunity['event_name']}, "
                     f"Selection: {betting_opportunity['team_name']}, "
-                    f"Stake: ÃÂ£{betting_opportunity['stake']}, "
+                    f"Stake: £{betting_opportunity['stake']}, "
                     f"Odds: {betting_opportunity['odds']}, "
                     f"Cycle: {betting_opportunity['cycle_number']}, "
                     f"Bet in cycle: {betting_opportunity['bet_in_cycle']}"
                 )
                 
-                # For dry run, explicitly record bet in repository to mark it as active
+                # For dry run, explicitly record bet to mark it as active
+                # This will also record the event for cycle tracking
+                await self.betting_ledger.record_bet_placed(betting_opportunity)
                 await self.bet_repository.record_bet_placement(betting_opportunity)
-                self.logger.info(f"[DRY RUN] Bet recorded as active in repository")
+                
+                self.logger.info(f"[DRY RUN] Bet recorded as active")
                 
                 return betting_opportunity
                 
@@ -231,7 +225,7 @@ class BettingSystem:
                     f"Match: {betting_opportunity['event_name']}\n"
                     f"Selection: {betting_opportunity['team_name']}\n"
                     f"Selection ID: {betting_opportunity['selection_id']}\n"
-                    f"Stake: ÃÂ£{request.stake}\n"
+                    f"Stake: £{request.stake}\n"
                     f"Odds: {request.odds}\n"
                     f"Cycle: {betting_opportunity['cycle_number']}\n"
                     f"Bet in cycle: {betting_opportunity['bet_in_cycle']}"
@@ -272,15 +266,6 @@ class BettingSystem:
             # Get updated account balance after settlement
             account_status = await self.account_repository.get_account_status()
             
-            # Record result in ledger with commission information
-            await self.betting_ledger.record_bet_result(
-                settled_bet, 
-                settled_bet.get('won', False), 
-                settled_bet.get('profit', 0.0),  # This is now the net profit after commission
-                account_status.current_balance,
-                settled_bet.get('commission', 0.0)  # Pass the commission amount
-            )
-            
             # Check if target reached
             if settled_bet.get('won', False) and await self.betting_ledger.check_target_reached(
                 account_status.current_balance, account_status.target_amount
@@ -288,22 +273,17 @@ class BettingSystem:
                 # Reset to starting stake for new cycle if target reached
                 initial_stake = await self.config_manager.get_initial_stake()
                 await self.account_repository.reset_to_starting_stake(initial_stake)
-                self.logger.info(f"Target reached! Reset to starting stake (ÃÂ£{initial_stake}) for new cycle.")
-            elif not settled_bet.get('won', False):
-                # Reset to starting stake after a loss
-                initial_stake = await self.config_manager.get_initial_stake()
-                await self.account_repository.reset_to_starting_stake(initial_stake)
-                self.logger.info(f"Bet lost. Reset to starting stake (ÃÂ£{initial_stake}) for new cycle.")
+                self.logger.info(f"Target reached! Reset to starting stake (£{initial_stake}) for new cycle.")
             
             self.logger.info(
                 f"Successfully settled bet:\n"
                 f"Match: {settled_bet.get('event_name', 'Unknown Event')}\n"
                 f"Selection: {settled_bet.get('team_name', 'Unknown Team')}\n"
                 f"Won: {settled_bet.get('won', False)}\n"
-                f"Gross Profit: ÃÂ£{settled_bet.get('gross_profit', 0.0)}\n"
-                f"Commission: ÃÂ£{settled_bet.get('commission', 0.0)}\n"
-                f"Net Profit: ÃÂ£{settled_bet.get('profit', 0.0)}\n"
-                f"New Balance: ÃÂ£{account_status.current_balance}"
+                f"Gross Profit: £{settled_bet.get('gross_profit', 0.0)}\n"
+                f"Commission: £{settled_bet.get('commission', 0.0)}\n"
+                f"Net Profit: £{settled_bet.get('profit', 0.0)}\n"
+                f"New Balance: £{account_status.current_balance}"
             )
             
             return settled_bet
@@ -411,7 +391,7 @@ class BettingSystem:
         win_rate = await self.account_repository.get_win_rate()
         profit_loss = await self.account_repository.get_profit_loss()
         
-        # Get cycle information from ledger
+        # Get cycle information from event store via ledger
         cycle_info = await self.betting_ledger.get_current_cycle_info()
         
         return {
@@ -429,27 +409,26 @@ class BettingSystem:
         }
 
     async def get_ledger_info(self) -> Dict:
-        """Get comprehensive ledger information"""
+        """Get comprehensive ledger information derived from events"""
         return await self.betting_ledger.get_ledger()
-        
         
     async def reset_system(self, initial_stake: float = 1.0) -> None:
         """
-        Reset the entire betting system to start fresh
+        Reset the entire betting system to start fresh with event sourcing
         
         Args:
             initial_stake: Initial stake amount for the new cycle
         """
         try:
-            self.logger.info(f"Resetting entire betting system with initial stake: ÃÂ£{initial_stake}")
+            self.logger.info(f"Resetting entire betting system with initial stake: £{initial_stake}")
             
-            # Reset account stats (instead of just the balance)
-            await self.account_repository.reset_account_stats(initial_stake)
-            
-            # Reset the betting ledger
+            # Reset the betting ledger (which resets the event store)
             await self.betting_ledger.reset_ledger(initial_stake)
             
-            # Add this method to clear bet history (see below)
+            # Reset account stats
+            await self.account_repository.reset_account_stats(initial_stake)
+            
+            # Clear bet history
             await self.bet_repository.reset_bet_history()
             
             # Clear any active bets
@@ -469,11 +448,9 @@ class BettingSystem:
             self.logger.exception(e)
             raise
             
-            
     async def get_active_bet_details(self) -> List[Dict]:
         """
         Get detailed information about all active bets including current market odds
-        with enhanced selection mapping
         
         Returns:
             List of enhanced bet details with current market information
@@ -548,9 +525,6 @@ class BettingSystem:
                     # Include original bet if can't get current market status
                     self.logger.warning(f"Could not retrieve market status for {market_id}")
                     enhanced_bets.append(bet)
-                        
-                # Log the enhanced bet structure
-                self.logger.debug(f"Enhanced bet created with updated market data")
             
             return enhanced_bets
                 

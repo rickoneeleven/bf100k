@@ -1,12 +1,8 @@
 """
 settle_bet_command.py
 
-Improved Command pattern implementation for bet settlement operations.
-Uses real Betfair API results instead of simulation.
-Handles validation, execution, and recording of bet settlements.
-Enhanced with consistent selection ID handling and unified market data retrieval.
-Added 5% Betfair commission calculation on winning bets.
-FIXED: Corrected timeout logic to consider event start time instead of bet placement time.
+Command pattern implementation for bet settlement operations.
+Updated to work with the event-sourced ledger approach.
 """
 
 from dataclasses import dataclass
@@ -20,6 +16,7 @@ from ..repositories.account_repository import AccountRepository
 from ..betfair_client import BetfairClient
 from ..selection_mapper import SelectionMapper
 from ..config_manager import ConfigManager
+from ..betting_ledger import BettingLedger
 
 @dataclass
 class BetSettlementRequest:
@@ -35,13 +32,16 @@ class BetSettlementCommand:
         betfair_client: BetfairClient,
         bet_repository: BetRepository,
         account_repository: AccountRepository,
-        config_manager: ConfigManager
+        config_manager: ConfigManager,
+        betting_ledger: BettingLedger = None
     ):
         self.betfair_client = betfair_client
         self.bet_repository = bet_repository
         self.account_repository = account_repository
-        self.selection_mapper = SelectionMapper()
         self.config_manager = config_manager
+        self.selection_mapper = SelectionMapper()
+        # Use provided betting ledger or create a new one if none was provided
+        self.betting_ledger = betting_ledger if betting_ledger else BettingLedger()
         
         # Setup logging
         self.logger = logging.getLogger('BetSettlementCommand')
@@ -183,9 +183,27 @@ class BetSettlementCommand:
                     f"for selection {selection_id} ({team_name})"
                 )
             
-            # Record settlement
+            # Calculate new balance
+            account_status = await self.account_repository.get_account_status()
+            current_balance = account_status.current_balance
+            new_balance = current_balance
+            
+            if won:
+                # Add stake plus net profit for winning bets
+                new_balance = current_balance + bet_details["stake"] + net_profit
+            
+            # Record settlement in betting ledger FIRST - creates BET_WON or BET_LOST event
+            await self.betting_ledger.record_bet_result(
+                bet_details=bet_details,
+                won=won,
+                profit=net_profit,
+                new_balance=new_balance,
+                commission=commission
+            )
+            
+            # Record settlement in bet repository
             try:
-                # Start atomic update
+                # Update bet repository
                 await self.bet_repository.record_bet_settlement(
                     bet_details=bet_details,
                     won=won,
@@ -196,8 +214,7 @@ class BetSettlementCommand:
                 
                 # Update account balance and stats
                 if won:
-                    # Add stake plus net profit for winning bets
-                    # Only using the net profit after commission
+                    # Add stake plus net profit for winning bets (after commission)
                     await self.account_repository.update_balance(
                         bet_details["stake"] + net_profit, 
                         f"Bet settlement: {won}, Market: {request.market_id}"
@@ -461,7 +478,7 @@ class BetSettlementCommand:
                         force_profit=0.0
                     )
                     
-                    # Execute forced settlement
+                    # Execute forced settlement using the event-sourced approach
                     await self.execute(request)
                     
                     self.logger.info(

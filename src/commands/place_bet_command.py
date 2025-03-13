@@ -1,11 +1,8 @@
 """
 place_bet_command.py
 
-Implements async Command pattern for bet placement operations.
-Handles validation, execution, and recording of bet placement.
-Enhanced with improved selection ID to team name mapping for consistency.
-Updated to use consistent market data retrieval method.
-FIXED: Properly synchronize with betting ledger cycle information
+Command pattern implementation for bet placement operations.
+Updated to work with the event-sourced ledger approach.
 """
 
 from dataclasses import dataclass
@@ -23,8 +20,8 @@ from ..betting_ledger import BettingLedger
 class PlaceBetRequest:
     """Data structure for bet placement request"""
     market_id: str
-    event_id: str  # Added event_id for context-aware mapping
-    event_name: str  # Added event_name for better logging and validation
+    event_id: str  # Event ID for context-aware mapping
+    event_name: str  # Event name for better logging and validation
     selection_id: int
     odds: float
     stake: float
@@ -107,35 +104,13 @@ class PlaceBetCommand:
                         if available_size < request.stake * 1.1:
                             return False, f"Insufficient liquidity: {available_size} < {request.stake * 1.1}"
                         
-                        # Get the team name from mapper for logging purposes
                         team_name = await self.selection_mapper.get_team_name(
                             request.event_id, 
                             str(request.selection_id)
                         )
                         
-                        if not team_name:
-                            # Try to derive team name from event name
-                            runners = market.get('runners', [])
-                            runners = await self.selection_mapper.derive_teams_from_event(
-                                request.event_id,
-                                request.event_name,
-                                runners
-                            )
-                            
-                            # Try getting team name again after deriving
-                            team_name = await self.selection_mapper.get_team_name(
-                                request.event_id, 
-                                str(request.selection_id)
-                            )
-                            
-                            if not team_name:
-                                self.logger.warning(
-                                    f"No team mapping could be created for selection {request.selection_id} "
-                                    f"in event {request.event_name}"
-                                )
-                        
                         self.logger.info(
-                            f"Validated selection {request.selection_id} ({team_name}) "
+                            f"Validated selection {request.selection_id} ({team_name or 'Unknown'}) "
                             f"with odds {best_price} and liquidity {available_size}"
                         )
                         return True, ""
@@ -198,7 +173,7 @@ class PlaceBetCommand:
                         request.event_id,
                         request.event_name,
                         str(request.selection_id),
-                        "Unknown Team"  # Will be derived from event name
+                        "Unknown Team"  # Will be derived from event name if possible
                     )
                     
                     # Try to get it again after adding
@@ -215,11 +190,10 @@ class PlaceBetCommand:
                         sort_priority = runner.get('sortPriority', 999)
                         break
             
-            # FIXED: Always get the most current cycle information from the ledger
-            # This ensures we're using the correct cycle number after a previous bet has been lost
+            # Get current cycle information from the event store via ledger
             cycle_info = await self.betting_ledger.get_current_cycle_info()
             
-            # Create bet record with enhanced details including cycle information
+            # Create bet record with enhanced details
             bet_details = {
                 "market_id": request.market_id,
                 "event_id": request.event_id,
@@ -230,26 +204,31 @@ class PlaceBetCommand:
                 "odds": request.odds,
                 "stake": request.stake,
                 "market_start_time": market_start_time,
+                # Add cycle information from event store derivation
                 "cycle_number": cycle_info["current_cycle"],
-                "bet_in_cycle": cycle_info["current_bet_in_cycle"] + 1,  # Will be incremented when recorded
+                "bet_in_cycle": cycle_info["current_bet_in_cycle"] + 1,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
             # Log cycle information for debugging
             self.logger.info(
-                f"Using current cycle information from ledger: "
+                f"Using current cycle information from event store: "
                 f"Cycle #{cycle_info['current_cycle']}, "
                 f"Bet #{cycle_info['current_bet_in_cycle'] + 1} in cycle"
             )
             
-            # Record bet placement and update balance atomically
+            # Record bet placement in betting ledger FIRST
+            # This creates the BET_PLACED event that updates cycle tracking
+            await self.betting_ledger.record_bet_placed(bet_details)
+            
+            # Then record in repository and update balance
             await self.bet_repository.record_bet_placement(bet_details)
             await self.account_repository.update_balance(-request.stake)
             
             self.logger.info(
                 f"Successfully placed bet: Market ID {request.market_id}, "
                 f"Selection: {team_name} (ID: {request.selection_id}, Priority: {sort_priority}), "
-                f"Stake ÃÂ£{request.stake}, Odds: {request.odds}, "
+                f"Stake £{request.stake}, Odds: {request.odds}, "
                 f"Cycle #{cycle_info['current_cycle']}, Bet #{cycle_info['current_bet_in_cycle'] + 1} in cycle"
             )
             
@@ -259,11 +238,6 @@ class PlaceBetCommand:
             self.logger.error(f"Failed to place bet: {str(e)}")
             self.logger.exception(e)
             # If an error occurs after bet recording but before balance update,
-            # we should attempt to roll back the bet recording
-            try:
-                # Note: In a full implementation, we would track the state and
-                # implement proper rollback mechanisms for partial failures
-                pass
-            except Exception as rollback_error:
-                self.logger.error(f"Failed to rollback bet placement: {str(rollback_error)}")
+            # we should attempt to roll back the bet recording, but this is complex
+            # and would need proper transaction management
             return None
