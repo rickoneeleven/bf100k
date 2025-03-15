@@ -2,6 +2,7 @@
 config_manager.py
 
 Simplified configuration management.
+Path updated to use web/config directory for web accessibility.
 """
 
 import os
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 class ConfigManager:
-    def __init__(self, config_file: str = 'config/betting_config.json'):
+    def __init__(self, config_file: str = 'web/config/betting_config.json'):
         self.config_file = Path(config_file)
         self.config_dir = self.config_file.parent
         self.config_dir.mkdir(parents=True, exist_ok=True)

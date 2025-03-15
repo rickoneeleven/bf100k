@@ -2,6 +2,7 @@
 main.py
 
 Entry point for the betting system with simplified flow and command-line interface.
+Updated to use the new config file location.
 """
 
 import os
@@ -344,9 +345,9 @@ async def main():
     signal.signal(signal.SIGTERM, handle_shutdown_signal)
     
     try:
-        # Initialize components
+        # Initialize components with updated config path
         logger.info("Initializing components")
-        config_manager = ConfigManager()
+        config_manager = ConfigManager()  # Will use the new default path: web/config/betting_config.json
         state_manager = BettingStateManager()
         
         betfair_client = BetfairClient(

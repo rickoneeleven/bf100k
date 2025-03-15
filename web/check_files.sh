@@ -39,7 +39,7 @@ if [ -d "data" ]; then
                     echo "    ✓ $file exists ($size bytes, permissions: $(stat -c '%a' "data/betting/$file"))"
                     echo "      First 100 chars: $(head -c 100 "data/betting/$file" | tr -d '\n')..."
                 else
-                    echo "    ⚠ $file exists but may be empty or invalid ($size bytes)"
+                    echo "    ⚠  $file exists but may be empty or invalid ($size bytes)"
                 fi
             else
                 echo "    ✗ $file is missing!"
@@ -54,7 +54,7 @@ fi
 
 echo ""
 echo "Checking config directory:"
-# Check config directory
+# Check config directory (now inside web directory)
 if [ -d "config" ]; then
     echo "✓ config/ directory exists (permissions: $(stat -c '%a' config/))"
     
@@ -65,7 +65,7 @@ if [ -d "config" ]; then
             echo "  ✓ betting_config.json exists ($size bytes, permissions: $(stat -c '%a' "config/betting_config.json"))"
             echo "    First 100 chars: $(head -c 100 "config/betting_config.json" | tr -d '\n')..."
         else
-            echo "  ⚠ betting_config.json exists but may be empty or invalid ($size bytes)"
+            echo "  ⚠  betting_config.json exists but may be empty or invalid ($size bytes)"
         fi
     else
         echo "  ✗ betting_config.json is missing!"
