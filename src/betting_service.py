@@ -2,12 +2,12 @@
 betting_service.py
 
 Main betting service that coordinates betting operations.
-Replaces the complex betting_system with a simpler implementation.
+Refactored to use actual Betfair results in both live and dry run modes.
 """
 
 import logging
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any
 
 from .betfair_client import BetfairClient
@@ -67,7 +67,7 @@ class BettingService:
             self.logger.info(
                 f"Scanning markets - Cycle #{state.current_cycle}, "
                 f"Bet #{state.current_bet_in_cycle + 1} in cycle, "
-                f"Next stake: £{next_stake:.2f}"
+                f"Next stake: Â£{next_stake:.2f}"
             )
             
             # Get football markets
@@ -149,7 +149,7 @@ class BettingService:
                 # Found a betting opportunity
                 self.logger.info(
                     f"Found betting opportunity: {event_name}, "
-                    f"Draw @ {draw_odds}, Available: £{draw_available_size}"
+                    f"Draw @ {draw_odds}, Available: Â£{draw_available_size}"
                 )
                 
                 # Create bet details
@@ -179,6 +179,7 @@ class BettingService:
     async def place_bet(self, bet_details: Dict) -> bool:
         """
         Place a bet based on identified opportunity.
+        In dry run mode, this simulates bet placement without actually placing a bet.
         
         Args:
             bet_details: Dict containing betting opportunity details
@@ -191,7 +192,7 @@ class BettingService:
                 f"Placing bet on event: {bet_details.get('event_name')}, "
                 f"Selection: {bet_details.get('team_name')}, "
                 f"Odds: {bet_details.get('odds')}, "
-                f"Stake: £{bet_details.get('stake')}"
+                f"Stake: Â£{bet_details.get('stake')}"
             )
             
             if self.dry_run:
@@ -200,14 +201,14 @@ class BettingService:
                     f"Match: {bet_details.get('event_name')}, "
                     f"Selection: {bet_details.get('team_name')}, "
                     f"Odds: {bet_details.get('odds')}, "
-                    f"Stake: £{bet_details.get('stake')}"
+                    f"Stake: Â£{bet_details.get('stake')}"
                 )
                 
                 # Record bet in state manager
                 self.state_manager.record_bet_placed(bet_details)
                 return True
             
-            # TODO: Implement actual Betfair bet placement
+            # TODO: Implement actual Betfair bet placement in live mode
             # For now, just record the bet in our state manager
             self.state_manager.record_bet_placed(bet_details)
             return True
@@ -218,7 +219,8 @@ class BettingService:
 
     async def check_bet_result(self) -> bool:
         """
-        Check the result of the current active bet.
+        Check the result of the current active bet using actual Betfair results
+        regardless of dry run status.
         
         Returns:
             True if bet was settled, False otherwise
@@ -238,21 +240,31 @@ class BettingService:
                 f"Selection {selection_id} ({team_name})"
             )
             
-            # Get result from Betfair API
-            if self.dry_run:
-                # In dry run mode, randomly decide result with 70% chance of win
-                import random
-                won = random.random() < 0.7
-                result_message = "Simulated win" if won else "Simulated loss"
+            # Get market data to check status
+            market_data = await self.betfair_client.get_market_data(market_id)
+            if not market_data:
+                self.logger.warning(f"Could not retrieve market data for {market_id}")
+                return False
+                
+            # Check if market is settled
+            market_status = market_data.get('status')
+            if market_status not in ['CLOSED', 'SETTLED']:
+                # Check if the market should have timed out based on start time
+                if self._should_timeout_bet(active_bet, market_data):
+                    self.logger.warning(f"Market {market_id} has timed out. Forcing settlement as loss.")
+                    # Force settlement as a loss
+                    won = False
+                    result_message = "Market timed out"
+                else:
+                    self.logger.info(f"Market not yet settled. Current status: {market_status}")
+                    return False
             else:
                 # Get actual result from Betfair
                 won, result_message = await self.betfair_client.get_market_result(
                     market_id, selection_id
                 )
                 
-                # If market not settled yet, return False
-                if result_message == f"Market not yet settled. Status: OPEN":
-                    return False
+                self.logger.info(f"Using actual Betfair result: {result_message}")
             
             # Calculate profit and commission
             stake = active_bet.get('stake', 0.0)
@@ -264,16 +276,16 @@ class BettingService:
                 net_profit = gross_profit - commission
                 
                 self.logger.info(
-                    f"Bet won! Gross profit: £{gross_profit:.2f}, "
-                    f"Commission: £{commission:.2f}, "
-                    f"Net profit: £{net_profit:.2f}"
+                    f"Bet won! Gross profit: Â£{gross_profit:.2f}, "
+                    f"Commission: Â£{commission:.2f}, "
+                    f"Net profit: Â£{net_profit:.2f}"
                 )
             else:
                 gross_profit = 0
                 commission = 0
                 net_profit = 0
                 
-                self.logger.info(f"Bet lost. Lost stake: £{stake:.2f}")
+                self.logger.info(f"Bet lost. Lost stake: Â£{stake:.2f}")
             
             # Record result in state manager
             self.state_manager.record_bet_result(
@@ -289,23 +301,105 @@ class BettingService:
         except Exception as e:
             self.logger.error(f"Error checking bet result: {str(e)}")
             return False
+    
+    def _should_timeout_bet(self, bet: Dict, market_data: Dict) -> bool:
+        """
+        Determine if a bet should be timed out based on market start time
+        and current time.
+        
+        Args:
+            bet: Bet details
+            market_data: Current market data
+            
+        Returns:
+            True if the bet should timeout, False otherwise
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            
+            # Get market start time from market data or bet details
+            market_start_time = None
+            if 'marketStartTime' in market_data:
+                market_start_time = datetime.fromisoformat(
+                    market_data['marketStartTime'].replace('Z', '+00:00')
+                )
+            elif 'market_start_time' in bet:
+                market_start_time = datetime.fromisoformat(
+                    bet['market_start_time'].replace('Z', '+00:00')
+                )
+            
+            # Get bet placement time
+            placement_time = datetime.fromisoformat(bet['timestamp'])
+            
+            # If market is in-play, check how long it's been in-play
+            is_inplay = market_data.get('inplay', False)
+            if is_inplay and market_start_time:
+                # Most sports events don't last more than 4 hours
+                inplay_duration = now - market_start_time
+                max_inplay_hours = 4
+                
+                if inplay_duration.total_seconds() > max_inplay_hours * 3600:
+                    self.logger.info(
+                        f"Market has been in-play for {inplay_duration.total_seconds() / 3600:.1f} hours, "
+                        f"exceeding the {max_inplay_hours} hour limit."
+                    )
+                    return True
+            
+            # If we have market start time and it's in the past, check for excessive delay
+            if market_start_time and market_start_time < now:
+                delay = now - market_start_time
+                max_delay_hours = 6  # Allow up to 6 hours delay for results
+                
+                if delay.total_seconds() > max_delay_hours * 3600:
+                    self.logger.info(
+                        f"Market was scheduled to start {delay.total_seconds() / 3600:.1f} hours ago "
+                        f"but has not settled yet (exceeding {max_delay_hours} hour threshold)."
+                    )
+                    return True
+            
+            # Check if bet is very old regardless of market start time
+            bet_age = now - placement_time
+            max_bet_age_days = 3  # Maximum bet age (3 days)
+            
+            if bet_age.total_seconds() > max_bet_age_days * 24 * 3600:
+                self.logger.info(
+                    f"Bet is {bet_age.total_seconds() / (24 * 3600):.1f} days old, "
+                    f"exceeding the {max_bet_age_days} day limit."
+                )
+                return True
+            
+            # If none of the timeout conditions are met, don't timeout
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error checking bet timeout: {str(e)}")
+            # Default to not timing out if there's an error
+            return False
 
     async def run_betting_cycle(self) -> None:
         """Execute one complete betting cycle."""
         try:
             # Skip if already has active bet
             if self.state_manager.has_active_bet():
-                # Check for results instead
+                # Check for results instead (using actual Betfair results)
+                self.logger.info("Active bet exists - checking for results")
                 await self.check_bet_result()
                 return
                 
             # Scan markets for opportunities
             opportunity = await self.scan_markets()
             if opportunity:
-                # Place bet
+                # Place bet (simulated placement in dry run mode)
+                self.logger.info(
+                    f"Found betting opportunity: {opportunity['event_name']}, "
+                    f"Selection: {opportunity['team_name']}, "
+                    f"Odds: {opportunity['odds']}"
+                )
+                
                 success = await self.place_bet(opportunity)
                 if success:
-                    self.logger.info("Bet successfully placed")
+                    mode_indicator = "[DRY RUN] " if self.dry_run else ""
+                    self.logger.info(f"{mode_indicator}Bet successfully placed")
                 else:
                     self.logger.error("Failed to place bet")
                     
