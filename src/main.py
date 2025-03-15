@@ -1,10 +1,7 @@
 """
 main.py
 
-Entry point for the betting system with command-line interface.
-Handles initialization, interactive command processing, and graceful shutdown.
-UPDATED: Removed automatic ledger reset to support compound betting strategy.
-UPDATED: Added log rotation and management to control log file size and retention.
+Entry point for the betting system with simplified flow and command-line interface.
 """
 
 import os
@@ -16,435 +13,409 @@ import sys
 from pathlib import Path
 from dotenv import load_dotenv
 from datetime import datetime, timezone
-from typing import Optional, Dict
+from typing import Dict, Any
 
-from .betting_system import BettingSystem
+from .betting_service import BettingService
 from .betfair_client import BetfairClient
-from .repositories.bet_repository import BetRepository
-from .repositories.account_repository import AccountRepository
-from .betting_ledger import BettingLedger
+from .betting_state_manager import BettingStateManager
 from .config_manager import ConfigManager
-from .command_processor import CommandProcessor
-from .log_manager import LogManager  # Import the new LogManager
+from .log_manager import LogManager
 
 # Global variables for shutdown control
-shutdown_event: Optional[asyncio.Event] = None
-shutdown_in_progress: bool = False
+shutdown_event = None
 
-async def run_betting_cycle(betting_system: BettingSystem):
-    """Execute a single betting cycle"""
-    try:
-        # Only run if no active bets
-        if await betting_system.bet_repository.has_active_bets():
-            logging.info("Active bet exists - skipping market scan")
+class CommandHandler:
+    """Handles command-line input and operations."""
+    
+    def __init__(self, betting_service: BettingService, state_manager: BettingStateManager, config_manager: ConfigManager):
+        self.betting_service = betting_service
+        self.state_manager = state_manager
+        self.config_manager = config_manager
+        self.should_exit = False
+        self.logger = logging.getLogger('CommandHandler')
+        
+    async def handle_command(self, command: str) -> None:
+        """Process a command from user input."""
+        parts = command.strip().split()
+        if not parts:
+            await self.cmd_status()
             return
             
-        # Get current cycle info and next stake amount using compound strategy
-        cycle_info = await betting_system.betting_ledger.get_current_cycle_info()
-        next_stake = await betting_system.betting_ledger.get_next_stake()
+        cmd = parts[0].lower()
+        args = parts[1:]
         
-        logging.info(
-            f"Running betting cycle - Cycle: {cycle_info['current_cycle']}, "
-            f"Bet in cycle: {cycle_info['current_bet_in_cycle'] + 1}, "
-            f"Next stake: £{next_stake:.2f} (compound strategy)"
-        )
-            
-        # Scan for opportunities
-        opportunity = await betting_system.scan_markets()
+        if cmd in ['help', 'h', '?']:
+            await self.cmd_help()
+        elif cmd in ['status', 's']:
+            await self.cmd_status()
+        elif cmd in ['bet', 'b']:
+            await self.cmd_bet_details()
+        elif cmd in ['history', 'hist']:
+            await self.cmd_history()
+        elif cmd in ['odds', 'o']:
+            await self.cmd_odds(*args)
+        elif cmd in ['reset', 'r']:
+            await self.cmd_reset(*args)
+        elif cmd in ['quit', 'exit', 'q']:
+            await self.cmd_quit()
+        else:
+            print(f"Unknown command: {cmd}")
+            print("Type 'help' for a list of available commands.")
+    
+    async def cmd_help(self) -> None:
+        """Display help information."""
+        print("\n=== Available Commands ===")
+        print("help, h, ?      - Show this help message")
+        print("status, s       - Show current betting system status")
+        print("bet, b          - Show details of active bet")
+        print("history, hist   - Show betting history")
+        print("odds [min max]  - View or change target odds range")
+        print("reset [stake]   - Reset the betting system with optional stake")
+        print("quit, exit, q   - Exit the application")
+        print("========================\n")
+    
+    async def cmd_status(self) -> None:
+        """Display current system status."""
+        stats = self.state_manager.get_stats_summary()
         
-        if opportunity:
-            # Place bet (real or simulated)
-            bet = await betting_system.place_bet_order(opportunity)
-            if bet:
-                account_status = await betting_system.get_account_status()
-                logging.info(
-                    f"Bet placed - Cycle #{account_status['current_cycle']}, "
-                    f"Bet #{account_status['current_bet_in_cycle']} in cycle, "
-                    f"Balance: £{account_status['current_balance']:.2f}, "
-                    f"Stake: £{bet['stake']:.2f}"
-                )
-    except Exception as e:
-        logging.error(f"Error in betting cycle: {str(e)}")
-        logging.exception(e)
-
-async def check_results(betting_system: BettingSystem):
-    """Check results of active bets"""
-    try:
-        # Check for settled bets
-        settled_bets = await betting_system.check_for_results()
-        
-        if settled_bets:
-            logging.info(f"Found {len(settled_bets)} settled bets")
-            
-            # Get updated status
-            status = await betting_system.get_account_status()
-            ledger = await betting_system.get_ledger_info()
-            
-            logging.info(
-                f"Updated status - Cycle: {status['current_cycle']}, "
-                f"Balance: £{status['current_balance']:.2f}, "
-                f"Total cycles: {status['total_cycles']}, "
-                f"Total money lost: £{status['total_money_lost']:.2f}, "
-                f"Total commission paid: £{ledger.get('total_commission_paid', 0.0):.2f}"
-            )
-    except Exception as e:
-        logging.error(f"Error checking results: {str(e)}")
-        logging.exception(e)
-
-async def display_status(betting_system: BettingSystem):
-    """Display current system status"""
-    try:
-        # Get account status and ledger info
-        status = await betting_system.get_account_status()
-        ledger = await betting_system.get_ledger_info()
-        
-        # Get next stake using compound strategy
-        next_stake = await betting_system.betting_ledger.get_next_stake()
-        
-        # Display summary
         print("\n" + "="*60)
         print("BETTING SYSTEM STATUS SUMMARY")
         print("="*60)
-        print(f"Current Cycle: #{status['current_cycle']}")
-        print(f"Current Bet in Cycle: #{status['current_bet_in_cycle']}")
-        print(f"Current Balance: £{status['current_balance']:.2f}")
-        print(f"Next Bet Stake: £{next_stake:.2f}")
-        print(f"Target Amount: £{status['target_amount']:.2f}")
-        print(f"Total Cycles Completed: {status['total_cycles']}")
-        print(f"Total Bets Placed: {status['total_bets_placed']}")
-        print(f"Successful Bets: {status['successful_bets']}")
-        print(f"Win Rate: {status['win_rate']:.1f}%")
-        print(f"Total Money Lost: £{status['total_money_lost']:.2f}")
-        print(f"Total Commission Paid: £{ledger.get('total_commission_paid', 0.0):.2f}")
-        print(f"Highest Balance Reached: £{ledger['highest_balance']:.2f}")
+        print(f"Current Cycle: #{stats['current_cycle']}")
+        print(f"Current Bet in Cycle: #{stats['current_bet_in_cycle']}")
+        print(f"Current Balance: £{stats['current_balance']:.2f}")
+        print(f"Next Bet Stake: £{stats['next_stake']:.2f}")
+        print(f"Target Amount: £{stats['target_amount']:.2f}")
+        print(f"Total Cycles Completed: {stats['total_cycles']}")
+        print(f"Total Bets Placed: {stats['total_bets_placed']}")
+        print(f"Successful Bets: {stats['total_wins']}")
+        print(f"Win Rate: {stats['win_rate']:.1f}%")
+        print(f"Total Money Lost: £{stats['total_money_lost']:.2f}")
+        print(f"Total Commission Paid: £{stats['total_commission_paid']:.2f}")
+        print(f"Highest Balance Reached: £{stats['highest_balance']:.2f}")
+        
+        # Show current configuration
+        config = self.config_manager.get_config()
+        betting_config = config.get('betting', {})
+        min_odds = betting_config.get('min_odds', 3.0)
+        max_odds = betting_config.get('max_odds', 4.0)
+        
+        print("\nCurrent Configuration:")
+        print(f"Mode: {'DRY RUN' if config.get('system', {}).get('dry_run', True) else 'LIVE'}")
+        print(f"Target Odds Range: {min_odds} - {max_odds}")
+        print(f"Initial Stake: £{betting_config.get('initial_stake', 1.0):.2f}")
         print("="*60 + "\n")
+    
+    async def cmd_bet_details(self) -> None:
+        """Display details of current active bet."""
+        active_bet = self.state_manager.get_active_bet()
         
-        logging.info("\n" + "="*60)
-        logging.info("BETTING SYSTEM STATUS SUMMARY")
-        logging.info("="*60)
-        logging.info(f"Current Cycle: #{status['current_cycle']}")
-        logging.info(f"Current Bet in Cycle: #{status['current_bet_in_cycle']}")
-        logging.info(f"Current Balance: £{status['current_balance']:.2f}")
-        logging.info(f"Next Bet Stake: £{next_stake:.2f}")
-        logging.info(f"Target Amount: £{status['target_amount']:.2f}")
-        logging.info(f"Total Cycles Completed: {status['total_cycles']}")
-        logging.info(f"Total Bets Placed: {status['total_bets_placed']}")
-        logging.info(f"Successful Bets: {status['successful_bets']}")
-        logging.info(f"Win Rate: {status['win_rate']:.1f}%")
-        logging.info(f"Total Money Lost: £{status['total_money_lost']:.2f}")
-        logging.info(f"Total Commission Paid: £{ledger.get('total_commission_paid', 0.0):.2f}")
-        logging.info(f"Highest Balance Reached: £{ledger['highest_balance']:.2f}")
-        logging.info("="*60 + "\n")
-    except Exception as e:
-        logging.error(f"Error displaying status: {str(e)}")
-
-async def main_loop_with_commands(betting_system: BettingSystem):
-    """Main operation loop with command processing and countdown timer"""
-    global shutdown_event, shutdown_in_progress
-    
-    # Initialize command processor
-    cmd_processor = CommandProcessor(betting_system)
-    
-    # Start the result poller in the background
-    result_poller_task = await betting_system.start_result_poller()
-    
-    # Show available commands
-    await cmd_processor.cmd_help()
-    
-    try:
-        while not shutdown_event.is_set() and not cmd_processor.should_exit:
+        if not active_bet:
+            print("\nNo active bet currently placed.")
+            return
+            
+        print("\n" + "="*75)
+        print("ACTIVE BET DETAILS")
+        print("="*75)
+        
+        # Basic details
+        print(f"Market ID: {active_bet.get('market_id')}")
+        print(f"Event: {active_bet.get('event_name', 'Unknown Event')}")
+        print(f"Cycle #{active_bet.get('cycle_number', '?')}, Bet #{active_bet.get('bet_in_cycle', '?')} in cycle")
+        print(f"Selection: {active_bet.get('team_name', 'Unknown')} @ {active_bet.get('odds', 0.0)}")
+        print(f"Selection ID: {active_bet.get('selection_id')}")
+        print(f"Stake: £{active_bet.get('stake', 0.0):.2f}")
+        
+        # Market start time
+        market_start_time = active_bet.get('market_start_time')
+        if market_start_time:
             try:
-                # First check for results of active bets
-                await check_results(betting_system)
-                
-                # Check if there are active bets
-                has_active_bets = await betting_system.bet_repository.has_active_bets()
-                
-                # Automatically display bet details if there are active bets
-                if has_active_bets:
-                    await cmd_processor.cmd_bet_details()
-                
-                # Then scan for betting opportunities if no active bets
-                if not has_active_bets:
-                    await run_betting_cycle(betting_system)
-                
-                # Wait with countdown and command processing
-                wait_seconds = 60  # Default wait time
-                
-                print(f"\nWaiting {wait_seconds} seconds before next cycle...")
-                print("Enter commands during this time. Type 'help' for available commands.")
-                
-                # Process commands during wait period
-                for remaining in range(wait_seconds, 0, -1):
-                    if shutdown_event.is_set() or cmd_processor.should_exit:
-                        break
-                        
-                    # Display countdown
-                    cmd_processor.print_countdown(remaining)
-                    
-                    # Check for input with timeout (non-blocking)
-                    ready_to_read, _, _ = select.select([sys.stdin], [], [], 0.1)
-                    
-                    if ready_to_read:
-                        command = sys.stdin.readline().strip()
-                        print()  # New line after input
-                        
-                        if command:
-                            await cmd_processor.process_command(command)
-                        else:
-                            # Empty input (just Enter) shows status
-                            await cmd_processor.cmd_status()
-                    
-                    # Sleep briefly to prevent CPU spinning
-                    await asyncio.sleep(0.9)
-                    
-            except asyncio.CancelledError:
-                # Handle task cancellation
-                logging.info("Main loop task cancelled")
-                break
-            except Exception as e:
-                logging.error(f"Error in main loop: {str(e)}")
-                logging.exception(e)
-                # Shorter error retry interval
-                await asyncio.sleep(5)
-    finally:
-        # Ensure cleanup runs
-        if cmd_processor.should_exit:
-            logging.info("Command exit requested")
+                start_dt = datetime.fromisoformat(market_start_time.replace('Z', '+00:00'))
+                formatted_time = start_dt.strftime('%Y-%m-%d %H:%M:%S')
+                print(f"Kickoff Time: {formatted_time}")
+            except:
+                print(f"Kickoff Time: {market_start_time}")
         
-        # Cancel the result poller task if it's still running
-        if not result_poller_task.done():
-            result_poller_task.cancel()
+        # Placement time
+        placement_time = active_bet.get('timestamp')
+        if placement_time:
             try:
-                await result_poller_task
-            except asyncio.CancelledError:
-                pass
+                dt = datetime.fromisoformat(placement_time)
+                formatted_time = dt.strftime('%Y-%m-%d %H:%M:%S')
+                print(f"Bet Placed: {formatted_time}")
+            except:
+                print(f"Bet Placed: {placement_time}")
         
-        await cleanup(betting_system)
+        print("="*75 + "\n")
+    
+    async def cmd_history(self, limit: int = 10) -> None:
+        """Display betting history."""
+        try:
+            limit = int(limit)
+        except:
+            limit = 10
+            
+        bets = self.state_manager.get_bet_history(limit)
+        
+        if not bets:
+            print("\nNo settled bets found.")
+            return
+            
+        print("\n" + "="*75)
+        print(f"SETTLED BET HISTORY (Last {len(bets)} bets)")
+        print("="*75)
+        
+        total_won = 0
+        total_lost = 0
+        total_commission = 0.0
+        
+        for bet in bets:
+            settlement_time = bet.get('settlement_time', 'Unknown')
+            try:
+                dt = datetime.fromisoformat(settlement_time)
+                formatted_time = dt.strftime('%Y-%m-%d %H:%M:%S')
+            except:
+                formatted_time = settlement_time
+                
+            won = bet.get('won', False)
+            if won:
+                total_won += 1
+                result_marker = "✓ WON"
+                stake = bet.get('stake', 0.0)
+                gross_profit = bet.get('gross_profit', 0.0)
+                commission = bet.get('commission', 0.0)
+                profit = bet.get('profit', 0.0)
+                total_commission += commission
+                profit_display = f"+£{profit:.2f} (Commission: £{commission:.2f})"
+            else:
+                total_lost += 1
+                result_marker = "✗ LOST"
+                stake = bet.get('stake', 0.0)
+                profit_display = f"-£{stake:.2f}"
+            
+            print(f"\n{formatted_time} - {result_marker} - {profit_display}")
+            print(f"Event: {bet.get('event_name', 'Unknown Event')}")
+            print(f"Selection: {bet.get('team_name', 'Unknown')} (ID: {bet.get('selection_id', 'Unknown')}) @ {bet.get('odds', 0.0)}")
+            print(f"Stake: £{bet.get('stake', 0.0):.2f}")
+            
+            if won:
+                print(f"Gross Profit: £{gross_profit:.2f}")
+                print(f"Commission (5%): £{commission:.2f}")
+                print(f"Net Profit: £{profit:.2f}")
+        
+        # Show summary
+        win_rate = (total_won / len(bets)) * 100 if bets else 0
+        print("\nSummary:")
+        print(f"Won: {total_won}, Lost: {total_lost}")
+        print(f"Win Rate: {win_rate:.1f}%")
+        print(f"Total Commission Paid: £{total_commission:.2f}")
+        print("="*75 + "\n")
+    
+    async def cmd_odds(self, *args) -> None:
+        """View or change target odds range."""
+        config = self.config_manager.get_config()
+        betting_config = config.get('betting', {})
+        
+        current_min = betting_config.get('min_odds', 3.0)
+        current_max = betting_config.get('max_odds', 4.0)
+        
+        if not args or len(args) < 2:
+            print(f"\nCurrent target odds range: {current_min} - {current_max}")
+            print("To change, use: odds <min> <max>")
+            print("Example: odds 3.0 4.0")
+            return
+            
+        try:
+            new_min = float(args[0])
+            new_max = float(args[1])
+            
+            if new_min <= 1.0:
+                print("Minimum odds must be greater than 1.0")
+                return
+                
+            if new_max <= new_min:
+                print("Maximum odds must be greater than minimum odds")
+                return
+            
+            # Update configuration
+            self.config_manager.update_config_value('betting', 'min_odds', new_min)
+            self.config_manager.update_config_value('betting', 'max_odds', new_max)
+            
+            print(f"\nTarget odds range updated: {new_min} - {new_max}")
+        except ValueError:
+            print("Invalid odds values. Please use numeric values.")
+    
+    async def cmd_reset(self, *args) -> None:
+        """Reset the betting system."""
+        config = self.config_manager.get_config()
+        configured_stake = config.get('betting', {}).get('initial_stake', 1.0)
+        
+        initial_stake = configured_stake
+        if args and len(args) > 0:
+            try:
+                initial_stake = float(args[0])
+            except ValueError:
+                print(f"Invalid stake amount: {args[0]}. Using configured default: £{configured_stake}")
+        
+        # Ask for confirmation
+        print(f"\nAre you sure you want to reset the betting system with initial stake: £{initial_stake}?")
+        print("This will clear all bet history and reset the account balance.")
+        print("Type 'yes' to confirm or anything else to cancel.")
+        
+        confirm = input("> ").strip().lower()
+        if confirm != 'yes':
+            print("Reset cancelled.")
+            return
+        
+        print(f"Resetting betting system with initial stake: £{initial_stake}...")
+        
+        # Update configuration if stake changed
+        if initial_stake != configured_stake:
+            self.config_manager.update_config_value('betting', 'initial_stake', initial_stake)
+        
+        # Reset state
+        self.state_manager.reset_state(initial_stake)
+        
+        print("Reset complete! System is ready for new betting cycle.")
+    
+    async def cmd_quit(self) -> None:
+        """Exit the application."""
+        self.should_exit = True
+        print("Shutting down betting system...")
 
-def handle_shutdown(signum, frame):
-    """Handle shutdown signals with improved handling for repeated signals"""
-    global shutdown_event, shutdown_in_progress
-    
-    # If shutdown is already in progress, force exit on repeated signals
-    if shutdown_in_progress:
-        print("\nForced exit due to repeated shutdown signals")
-        logging.warning("Forced exit due to repeated shutdown signals")
-        os._exit(1)  # Force immediate exit
-    
-    # Set flags for graceful shutdown
-    print("\nShutdown signal received. Press Ctrl+C again to force exit.")
-    logging.info("Shutdown signal received")
-    shutdown_in_progress = True
-    
+def handle_shutdown_signal(signum, frame):
+    """Handle shutdown signals."""
+    global shutdown_event
     if shutdown_event:
         shutdown_event.set()
+    print("\nShutdown signal received. Exiting...")
 
-async def cleanup(betting_system: BettingSystem):
-    """Perform cleanup operations with timeout"""
+async def run_command_loop(cmd_handler: CommandHandler, betting_service: BettingService) -> None:
+    """Run interactive command loop while the betting service runs."""
     try:
-        print("\nShutting down. Please wait...")
-        
-        # Display final status
-        await display_status(betting_system)
-        
-        # Set a timeout for graceful shutdown
-        try:
-            # Use wait_for to set a timeout for the shutdown
-            await asyncio.wait_for(betting_system.shutdown(), timeout=10.0)
-        except asyncio.TimeoutError:
-            print("Shutdown timed out. Some operations may not have completed.")
-            logging.warning("Shutdown timed out. Some operations may not have completed.")
-        
-        logging.info("Cleanup completed")
-        print("System shutdown complete. Goodbye!")
-    except Exception as e:
-        logging.error(f"Error during cleanup: {str(e)}")
-        logging.exception(e)
+        while not cmd_handler.should_exit and not shutdown_event.is_set():
+            # Display countdown with command prompt
+            interval = 60  # Default interval
+            
+            print(f"Waiting {interval} seconds for next betting cycle...")
+            print("Enter commands during this time. Type 'help' for available commands.")
+            
+            # Process commands during wait period
+            for remaining in range(interval, 0, -1):
+                if cmd_handler.should_exit or shutdown_event.is_set():
+                    break
+                    
+                # Display countdown
+                sys.stdout.write(f"\rNext cycle in {remaining} seconds. Enter command or press Enter for status: ")
+                sys.stdout.flush()
+                
+                # Check for input with timeout (non-blocking)
+                ready_to_read, _, _ = select.select([sys.stdin], [], [], 0.1)
+                
+                if ready_to_read:
+                    command = sys.stdin.readline().strip()
+                    print()  # New line after input
+                    
+                    await cmd_handler.handle_command(command)
+                    
+                # Sleep briefly
+                await asyncio.sleep(0.9)
+                
+    except asyncio.CancelledError:
+        print("Command loop cancelled")
+    finally:
+        await betting_service.stop()
 
 async def main():
-    """Entry point for the betting system"""
-    global shutdown_event, shutdown_in_progress
-    print("Setting up shutdown event...")
+    """Entry point for the betting system."""
+    global shutdown_event
     shutdown_event = asyncio.Event()
-    shutdown_in_progress = False
     
     # Load environment variables
-    print("Loading environment variables...")
     load_dotenv()
     
-    # Initialize log management before setting up other logging
-    print("Initializing log management...")
-    LogManager.initialize_system_logging(retention_days=3)
+    # Initialize logging
+    LogManager.initialize_logging(retention_days=3)
+    logger = logging.getLogger('main')
+    logger.info("Betting system starting up")
     
-    # Check and truncate existing large log files
-    LogManager.truncate_old_logs('web/logs', retention_days=3)
-    
-    # Setup logging with rotation
-    print("Setting up logging with rotation...")
-    # Ensure log directory exists
-    log_dir = Path('web/logs')
-    log_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Set up main logger using LogManager
-    main_logger = LogManager.setup_logger(
-        'main',
-        'web/logs/main.log',
-        level=logging.INFO,
-        retention_days=3
-    )
-    
-    # Set root logger to use main logger's handlers
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
-    for handler in main_logger.handlers:
-        root_logger.addHandler(handler)
-    
-    logging.info("Logging initialized with 3-day retention")
-    
-    print("Setting up signal handlers...")
     # Setup signal handlers
-    signal.signal(signal.SIGINT, handle_shutdown)
-    signal.signal(signal.SIGTERM, handle_shutdown)
-    
-    # Create a reference to the main task so we can cancel it
-    main_task = None
+    signal.signal(signal.SIGINT, handle_shutdown_signal)
+    signal.signal(signal.SIGTERM, handle_shutdown_signal)
     
     try:
-        # Initialize configuration manager
-        print("Initializing configuration manager...")
-        config_manager = ConfigManager()
-        config = config_manager.load_config()
-        
         # Initialize components
-        print("Initializing Betfair client...")
+        logger.info("Initializing components")
+        config_manager = ConfigManager()
+        state_manager = BettingStateManager()
+        
         betfair_client = BetfairClient(
             app_key=os.getenv('BETFAIR_APP_KEY'),
             cert_file=os.getenv('BETFAIR_CERT_FILE'),
             key_file=os.getenv('BETFAIR_KEY_FILE')
         )
         
-        print("Initializing repositories...")
-        bet_repository = BetRepository()
-        account_repository = AccountRepository()
+        # Login to Betfair
+        logger.info("Logging into Betfair API")
+        login_successful = await betfair_client.login()
         
-        # Initialize BettingLedger to ensure it exists
-        print("Initializing betting ledger...")
-        betting_ledger = BettingLedger()
-        
-        # Reset account balance but not the ledger (preserves compound betting data)
-        print("Resetting account to starting stake...")
-        initial_stake = config.get('betting', {}).get('initial_stake', 1.0)
-        await account_repository.reset_to_starting_stake(initial_stake)
-        
-        # Get current ledger info to check if we should use compound strategy
-        ledger_info = await betting_ledger.get_ledger()
-        has_previous_profit = ledger_info.get('last_winning_profit', 0.0) > 0
-        
-        if has_previous_profit:
-            print(f"Found previous winning profit: £{ledger_info['last_winning_profit']:.2f}")
-            print("Using compound betting strategy with previous profit as next stake")
-        else:
-            print(f"No previous profit found, using initial stake: £{initial_stake}")
-        
-        # After initialization
-        account_status = await account_repository.get_account_status()
-        print(f"DEBUG - Account balance: £{account_status.current_balance}")
-        print(f"DEBUG - Ledger starting stake: £{ledger_info['starting_stake']}")
-        print(f"DEBUG - Ledger highest balance: £{ledger_info['highest_balance']}")
-        print(f"DEBUG - Current cycle: {ledger_info['current_cycle']}")
-        print(f"DEBUG - Current bet in cycle: {ledger_info['current_bet_in_cycle']}")
-        if has_previous_profit:
-            print(f"DEBUG - Last winning profit: £{ledger_info['last_winning_profit']}")
-        
-        # Initialize system with configuration
-        print("Initializing betting system...")
-        betting_system = BettingSystem(
+        if not login_successful:
+            logger.error("Failed to login to Betfair")
+            print("Failed to login to Betfair - check credentials and certificates")
+            return
+            
+        # Initialize betting service
+        betting_service = BettingService(
             betfair_client=betfair_client,
-            bet_repository=bet_repository,
-            account_repository=account_repository,
+            state_manager=state_manager,
             config_manager=config_manager
         )
         
-        # Login to Betfair
-        print("Logging into Betfair API...")
-        async with betfair_client as client:
-            login_result = await client.login()
-            print(f"Login result: {login_result}")
+        # Initialize command handler
+        cmd_handler = CommandHandler(betting_service, state_manager, config_manager)
+        
+        # Show help
+        await cmd_handler.cmd_help()
+        
+        # Show initial status
+        await cmd_handler.cmd_status()
+        
+        # Start tasks
+        service_task = asyncio.create_task(betting_service.start())
+        command_task = asyncio.create_task(run_command_loop(cmd_handler, betting_service))
+        
+        # Wait for shutdown event or tasks to complete
+        await shutdown_event.wait()
+        
+        # Cancel tasks
+        logger.info("Shutting down tasks")
+        
+        if not service_task.done():
+            service_task.cancel()
             
-            if not login_result:
-                print("Failed to login to Betfair")
-                logging.error("Failed to login to Betfair")
-                return
+        if not command_task.done():
+            command_task.cancel()
             
-            # Get dry run status from config
-            is_dry_run = config.get('system', {}).get('dry_run', True)
-            mode_str = "DRY RUN" if is_dry_run else "LIVE"
-            
-            print(f"Starting betting system in {mode_str} mode with compound strategy")
-            logging.info(f"Starting betting system in {mode_str} mode with compound strategy")
-            logging.info(f"Initial balance: £{initial_stake}, Target: £{config.get('betting', {}).get('target_amount', 50000.0)}")
-            
-            # Display initial status
-            print("Displaying initial status...")
-            await display_status(betting_system)
-            
-            try:
-                # Create the main loop task
-                main_task = asyncio.create_task(main_loop_with_commands(betting_system))
-                
-                # Wait for shutdown event or task completion
-                await shutdown_event.wait()
-                
-                # Cancel the main task if it's still running
-                if main_task and not main_task.done():
-                    main_task.cancel()
-                    try:
-                        await main_task
-                    except asyncio.CancelledError:
-                        pass
-                
-            except asyncio.CancelledError:
-                print("Main task cancelled")
-                logging.info("Main task cancelled")
-            finally:
-                # Ensure cleanup runs
-                if not shutdown_in_progress:
-                    # This can happen if the main task exits without setting shutdown_event
-                    print("Running cleanup...")
-                    await cleanup(betting_system)
-            
+        # Wait for tasks to complete
+        await asyncio.gather(service_task, command_task, return_exceptions=True)
+        
+        logger.info("System shutdown complete")
+        
     except Exception as e:
-        print(f"Fatal error: {str(e)}")
-        logging.error(f"Fatal error: {str(e)}")
-        logging.exception(e)
+        logger.error(f"Fatal error: {str(e)}", exc_info=True)
     finally:
-        # Cancel the main task if it exists and is still running
-        if main_task and not main_task.done():
-            main_task.cancel()
-        
-        # Ensure all tasks are cancelled
-        print("Cancelling remaining tasks...")
-        for task in asyncio.all_tasks():
-            if task is not asyncio.current_task():
-                task.cancel()
-        print("Main function completed.")
-        
+        # Final cleanup
+        logging.shutdown()
+
 if __name__ == "__main__":
-    print("Starting Betfair Compound Betting System with Command Interface...")
+    print("Starting Betfair Compound Betting System")
     try:
-        print("Initializing asyncio event loop...")
         asyncio.run(main())
-        print("Main event loop completed.")
     except KeyboardInterrupt:
         print("Process interrupted by user")
-        logging.info("Process interrupted by user")
     except Exception as e:
         print(f"ERROR: Process terminated due to error: {str(e)}")
-        print(f"Exception details: {type(e).__name__}")
         import traceback
         traceback.print_exc()
-        logging.error(f"Process terminated due to error: {str(e)}")
     finally:
         print("Process shutdown complete")
-        logging.info("Process shutdown complete")

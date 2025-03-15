@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Betting System Dashboard</title>
+    <link rel="stylesheet" href="dashboard.css">
+    <meta http-equiv="refresh" content="60">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Betting System Dashboard</h1>
+            <p class="timestamp">Last Updated: <span id="last-updated">Loading...</span></p>
+        </header>
+
+        <div class="grid-container">
+            <div class="card status">
+                <h2>System Status</h2>
+                <div class="status-content">
+                    <div class="status-item">
+                        <span class="label">Mode:</span>
+                        <span class="value" id="mode">Loading...</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">Current Balance:</span>
+                        <span class="value" id="balance">Loading...</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">Target Amount:</span>
+                        <span class="value" id="target">Loading...</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">Current Cycle:</span>
+                        <span class="value" id="cycle">Loading...</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">Current Bet in Cycle:</span>
+                        <span class="value" id="bet-in-cycle">Loading...</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">Next Stake:</span>
+                        <span class="value" id="next-stake">Loading...</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card statistics">
+                <h2>Statistics</h2>
+                <div class="stats-content">
+                    <div class="stats-item">
+                        <span class="label">Total Bets Placed:</span>
+                        <span class="value" id="total-bets">Loading...</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="label">Win Rate:</span>
+                        <span class="value" id="win-rate">Loading...</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="label">Wins / Losses:</span>
+                        <span class="value" id="win-loss">Loading...</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="label">Total Money Lost:</span>
+                        <span class="value" id="money-lost">Loading...</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="label">Total Commission Paid:</span>
+                        <span class="value" id="commission-paid">Loading...</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="label">Highest Balance:</span>
+                        <span class="value" id="highest-balance">Loading...</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card active-bet">
+                <h2>Active Bet</h2>
+                <div id="active-bet-content">
+                    <p id="no-active-bet" style="display: none;">No active bet</p>
+                    <div id="active-bet-details" style="display: none;">
+                        <div class="bet-item">
+                            <span class="label">Event:</span>
+                            <span class="value" id="event-name">Loading...</span>
+                        </div>
+                        <div class="bet-item">
+                            <span class="label">Selection:</span>
+                            <span class="value" id="selection">Loading...</span>
+                        </div>
+                        <div class="bet-item">
+                            <span class="label">Odds:</span>
+                            <span class="value" id="odds">Loading...</span>
+                        </div>
+                        <div class="bet-item">
+                            <span class="label">Stake:</span>
+                            <span class="value" id="stake">Loading...</span>
+                        </div>
+                        <div class="bet-item">
+                            <span class="label">Placed:</span>
+                            <span class="value" id="placed-time">Loading...</span>
+                        </div>
+                        <div class="bet-item">
+                            <span class="label">Market ID:</span>
+                            <span class="value" id="market-id">Loading...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card bet-history">
+                <h2>Bet History</h2>
+                <div id="bet-history-content">
+                    <table id="history-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Event</th>
+                                <th>Selection</th>
+                                <th>Stake</th>
+                                <th>Result</th>
+                                <th>Profit/Loss</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-body">
+                            <tr>
+                                <td colspan="6">Loading bet history...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="card log-viewer">
+            <h2>Latest Log Entries</h2>
+            <div id="log-content">
+                <pre id="log-entries">Loading logs...</pre>
+            </div>
+        </div>
+    </div>
+
+    <script src="dashboard.js"></script>
+</body>
+</html>
