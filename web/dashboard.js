@@ -9,60 +9,105 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 function fetchSystemData() {
-    // Fetch betting state data
-    fetch('data/betting/betting_state.json')
-        .then(response => response.json())
+    console.log("Fetching system data...");
+    
+    // Fetch betting state data - using relative paths based on observed server structure
+    fetch('./data/betting/betting_state.json')
+        .then(response => {
+            if (!response.ok) {
+                console.error(`HTTP error! Status: ${response.status} for betting_state.json`);
+                throw new Error(`HTTP error! Status: ${response.status}`);
+            }
+            return response.json();
+        })
         .then(data => {
+            console.log("Betting state data loaded:", data);
             updateSystemStatus(data);
             updateStatistics(data);
         })
         .catch(error => {
             console.error('Error fetching system data:', error);
+            document.getElementById('balance').textContent = 'Error loading data';
         });
     
     // Fetch active bet data
-    fetch('data/betting/active_bet.json')
-        .then(response => response.json())
+    fetch('./data/betting/active_bet.json')
+        .then(response => {
+            if (!response.ok) {
+                // If file returns 404, treat as no active bet
+                if (response.status === 404) {
+                    throw new Error('No active bet file found');
+                }
+                console.error(`HTTP error! Status: ${response.status} for active_bet.json`);
+                throw new Error(`HTTP error! Status: ${response.status}`);
+            }
+            return response.json();
+        })
         .then(data => {
+            console.log("Active bet data loaded:", data);
             updateActiveBet(data);
         })
         .catch(error => {
+            console.error('Error fetching active bet:', error);
             // If file not found or empty, show no active bet
             document.getElementById('no-active-bet').style.display = 'block';
             document.getElementById('active-bet-details').style.display = 'none';
         });
     
     // Fetch bet history data
-    fetch('data/betting/bet_history.json')
-        .then(response => response.json())
+    fetch('./data/betting/bet_history.json')
+        .then(response => {
+            if (!response.ok) {
+                console.error(`HTTP error! Status: ${response.status} for bet_history.json`);
+                throw new Error(`HTTP error! Status: ${response.status}`);
+            }
+            return response.json();
+        })
         .then(data => {
+            console.log("Bet history data loaded:", data);
             updateBetHistory(data);
         })
         .catch(error => {
             console.error('Error fetching bet history:', error);
+            document.getElementById('history-body').innerHTML = 
+                '<tr><td colspan="6">Error loading bet history</td></tr>';
         });
     
     // Fetch configuration data
-    fetch('config/betting_config.json')
-        .then(response => response.json())
+    fetch('./config/betting_config.json')
+        .then(response => {
+            if (!response.ok) {
+                console.error(`HTTP error! Status: ${response.status} for betting_config.json`);
+                throw new Error(`HTTP error! Status: ${response.status}`);
+            }
+            return response.json();
+        })
         .then(data => {
+            console.log("Config data loaded:", data);
             updateConfigInfo(data);
         })
         .catch(error => {
             console.error('Error fetching config data:', error);
+            document.getElementById('mode').textContent = 'Config Error';
         });
 }
 
 function fetchLogData() {
     // Fetch the latest system log file
-    fetch('logs/system.log')
-        .then(response => response.text())
+    fetch('./logs/system.log')
+        .then(response => {
+            if (!response.ok) {
+                console.error(`HTTP error! Status: ${response.status} for system.log`);
+                throw new Error(`HTTP error! Status: ${response.status}`);
+            }
+            return response.text();
+        })
         .then(data => {
             updateLogViewer(data);
         })
         .catch(error => {
             console.error('Error fetching logs:', error);
-            document.getElementById('log-entries').textContent = 'Error loading logs';
+            document.getElementById('log-entries').textContent = 'Error loading logs: ' + error.message;
         });
 }
 
