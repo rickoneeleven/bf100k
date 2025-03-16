@@ -19,28 +19,29 @@ class ConfigManager:
         
         # Default configuration
         self.default_config = {
-            "betting": {
-                "initial_stake": 1.0,
-                "target_amount": 50000.0,
-                # Removed min_odds and max_odds since we're no longer using them
-                "liquidity_factor": 1.1,
-            },
-            "market_selection": {
-                "max_markets": 1000,  # Effectively remove the limit
-                "sport_id": "1",
-                "market_type": "MATCH_ODDS",
-                "polling_interval_seconds": 60
-            },
-            "result_checking": {
-                "check_interval_minutes": 5,
-                "event_timeout_hours": 12
-            },
-            "system": {
-                "dry_run": True,
-                "log_level": "INFO"
-            }
+        "betting": {
+            "initial_stake": 1.0,
+            "target_amount": 50000.0,
+            "liquidity_factor": 1.1,
+        },
+        "market_selection": {
+            "max_markets": 1000,  # Total markets to fetch
+            "top_markets": 10,    # Number of top markets to analyze
+            "hours_ahead": 4,     # Hours ahead to search for markets
+            "sport_id": "1",
+            "market_type": "MATCH_ODDS",
+            "polling_interval_seconds": 60
+        },
+        "result_checking": {
+            "check_interval_minutes": 5,
+            "event_timeout_hours": 12
+        },
+        "system": {
+            "dry_run": True,
+            "log_level": "INFO"
         }
-        
+    }
+            
         # Setup logging
         self.logger = logging.getLogger('ConfigManager')
         

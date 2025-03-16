@@ -93,8 +93,17 @@ class BetfairClient:
             self.logger.error(f"Exception during login: {str(e)}")
             return False
 
-    async def get_football_markets(self, max_results: int = 1000) -> Optional[List[Dict]]:
-        """Get football Match Odds markets, sorted by matched volume"""
+    async def get_football_markets(self, max_results: int = 1000, hours_ahead: int = 4) -> Optional[List[Dict]]:
+        """
+        Get football Match Odds markets, sorted by matched volume
+        
+        Args:
+            max_results: Maximum number of markets to return
+            hours_ahead: How many hours into the future to search for markets
+            
+        Returns:
+            List of markets if successful, None otherwise
+        """
         if not self.session_token:
             self.logger.error('No session token available - please login first')
             return None
@@ -102,12 +111,14 @@ class BetfairClient:
         try:
             session = await self.ensure_session()
             
-            # Set time window from now to 1 hour in the future
+            # Set time window from now to specified hours in the future
             now = datetime.now(timezone.utc)
-            future = now + timedelta(hours=1)
+            future = now + timedelta(hours=hours_ahead)
             
             today = now.strftime('%Y-%m-%dT%H:%M:%SZ')
-            one_hour_later = future.strftime('%Y-%m-%dT%H:%M:%SZ')
+            future_time = future.strftime('%Y-%m-%dT%H:%M:%SZ')
+            
+            self.logger.info(f"Searching for football markets from {today} to {future_time} (next {hours_ahead} hours)")
             
             payload = {
                 'jsonrpc': '2.0',
@@ -118,18 +129,17 @@ class BetfairClient:
                         'marketTypeCodes': ['MATCH_ODDS'],
                         'marketStartTime': {
                             'from': today,
-                            'to': one_hour_later
+                            'to': future_time
                         }
-                        # Removed inPlayOnly filter to include all markets
                     },
-                    'maxResults': max_results,  # Higher limit to essentially remove restriction
+                    'maxResults': max_results,
                     'marketProjection': [
                         'EVENT',
+                        'COMPETITION',
                         'MARKET_START_TIME',
-                        'RUNNER_DESCRIPTION',
-                        'COMPETITION'
+                        'RUNNER_DESCRIPTION'
                     ],
-                    'sort': 'MAXIMUM_TRADED'
+                    'sort': 'MAXIMUM_TRADED'  # Sort by traded volume to get most liquid markets first
                 },
                 'id': 1
             }
@@ -144,7 +154,8 @@ class BetfairClient:
                 if resp.status == 200:
                     resp_json = await resp.json()
                     if 'result' in resp_json:
-                        self.logger.info(f"Found {len(resp_json['result'])} football markets")
+                        markets_found = len(resp_json['result'])
+                        self.logger.info(f"Found {markets_found} football markets in the next {hours_ahead} hours")
                         return resp_json['result']
                     else:
                         self.logger.error(f'Error in response: {resp_json.get("error")}')
@@ -437,19 +448,20 @@ class BetfairClient:
             self.logger.error(f'Exception during get_market_result: {str(e)}')
             return False, f"Error checking result: {str(e)}"
             
-    async def get_markets_with_odds(self, max_markets: int = 5) -> Tuple[List[Dict], List[Dict]]:
+    async def get_markets_with_odds(self, max_markets: int = 10, hours_ahead: int = 4) -> Tuple[List[Dict], List[Dict]]:
         """
         Get football markets with their corresponding odds in a single call.
         
         Args:
             max_markets: Maximum number of markets to return
+            hours_ahead: How many hours into the future to search for markets
             
         Returns:
             Tuple of (markets, market_books)
         """
         try:
-            # Get market catalogue first
-            markets = await self.get_football_markets(max_markets)
+            # Get market catalogue first with extended time window
+            markets = await self.get_football_markets(max_markets, hours_ahead)
             if not markets:
                 return [], []
                 

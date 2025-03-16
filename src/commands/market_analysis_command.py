@@ -146,6 +146,10 @@ class MarketAnalysisCommand:
             if not market_data:
                 self.logger.error(f"Failed to get market data for {market_id}")
                 return None
+            
+            # Get total matched amount for visibility
+            total_matched = market_data.get('totalMatched', 0)
+            self.logger.info(f"Market {market_id} has total matched volume: £{total_matched}")
                 
             # We're no longer skipping in-play markets
                 
@@ -208,6 +212,8 @@ class MarketAnalysisCommand:
             draw_odds = draw_available_to_back.get('price', 0)
             draw_available_size = draw_available_to_back.get('size', 0)
             
+            self.logger.info(f"Draw odds: {draw_odds}, Available volume: £{draw_available_size}")
+            
             # Get odds for both teams
             team_odds = []
             for team_runner in team_runners:
@@ -215,7 +221,9 @@ class MarketAnalysisCommand:
                 team_available_to_back = team_ex.get('availableToBack', [{}])[0]
                 
                 if team_available_to_back:
-                    team_odds.append(team_available_to_back.get('price', 0))
+                    odds = team_available_to_back.get('price', 0)
+                    team_odds.append(odds)
+                    self.logger.info(f"Team {team_runner.get('teamName')}: odds {odds}")
             
             # Check if Draw odds are higher than both team odds
             is_draw_odds_highest = len(team_odds) >= 2 and all(draw_odds > team_odd for team_odd in team_odds)
@@ -239,7 +247,8 @@ class MarketAnalysisCommand:
                     f"Found betting opportunity on Draw: {event_name}, "
                     f"Odds: {draw_odds}, "
                     f"Selection ID: {draw_runner.get('selectionId')}, "
-                    f"Stake: £{stake_amount}"
+                    f"Stake: £{stake_amount}, "
+                    f"Liquidity: £{draw_available_size}"
                 )
                 
                 return await self._create_betting_opportunity(
@@ -252,7 +261,7 @@ class MarketAnalysisCommand:
                     available_volume=draw_available_size
                 )
             else:
-                self.logger.debug(
+                self.logger.info(
                     f"Draw doesn't meet criteria: {reason}"
                 )
             
@@ -355,7 +364,7 @@ class MarketAnalysisCommand:
 
     async def analyze_markets(self, request: MarketAnalysisRequest) -> Optional[Dict]:
         """
-        Analyze available markets for betting opportunities
+        Analyze available markets for betting opportunities with focus on high-liquidity markets.
         
         Args:
             request: Market analysis request parameters
@@ -368,26 +377,44 @@ class MarketAnalysisCommand:
                 f"Analyzing markets (attempt {request.polling_count + 1}/{request.max_polling_attempts})"
             )
             
-            # Get football markets data for initial list only
-            markets, _ = await self.betfair_client.get_markets_with_odds(request.max_markets)
+            # Get configuration
+            config = self.config_manager.get_config()
+            market_config = config.get('market_selection', {})
+            hours_ahead = market_config.get('hours_ahead', 4)
+            top_markets = market_config.get('top_markets', 10)
+            
+            # Get a large set of football markets data with extended time window
+            markets = await self.betfair_client.get_football_markets(request.max_markets, hours_ahead)
             
             if not markets:
                 self.logger.error("Failed to get market data")
                 return None
             
-            self.logger.info(f"Analyzing {len(markets)} football markets")
+            # Markets should already be sorted by MAXIMUM_TRADED from the API call
+            # Take only the top N markets with the highest traded volume
+            top_markets_list = markets[:top_markets]
             
-            # Process each market individually with fresh data
-            for market in markets:
+            self.logger.info(
+                f"Analyzing {len(top_markets_list)} top markets by traded volume out of {len(markets)} total markets "
+                f"for the next {hours_ahead} hours"
+            )
+            
+            # Log the top markets for visibility
+            for idx, market in enumerate(top_markets_list):
+                event_name = market.get('event', {}).get('name', 'Unknown')
+                total_matched = market.get('totalMatched', 0)
+                start_time = self._format_market_time(market.get('marketStartTime', ''))
+                
+                self.logger.info(
+                    f"Top Market #{idx+1}: {event_name}, "
+                    f"Total Matched: £{total_matched}, Start: {start_time}"
+                )
+            
+            # Process each top market individually with fresh data
+            for market in top_markets_list:
                 market_id = market.get('marketId')
                 event = market.get('event', {})
                 event_name = event.get('name', 'Unknown')
-                
-                # Check market start time
-                market_start_time = market.get('marketStartTime')
-                if market_start_time:
-                    formatted_time = self._format_market_time(market_start_time)
-                    self.logger.info(f"Analyzing market: {event_name} (Start: {formatted_time})")
                 
                 # Analyze individual market with fresh data
                 opportunity = await self._analyze_individual_market(
@@ -400,7 +427,7 @@ class MarketAnalysisCommand:
                     return opportunity
             
             # No suitable markets found in this polling attempt
-            self.logger.info("No suitable markets found in this polling attempt")
+            self.logger.info("No suitable markets found among the top markets")
             return None
             
         except Exception as e:
@@ -451,8 +478,8 @@ class MarketAnalysisCommand:
 
     async def execute_with_polling(self) -> Optional[Dict]:
         """
-        Execute market analysis with continuous polling
-        This version performs polling internally rather than relying on the main system
+        Execute market analysis with continuous polling.
+        This version performs polling internally rather than relying on the main system.
         
         Returns:
             Betting opportunity if found, None after all polling attempts
@@ -468,16 +495,24 @@ class MarketAnalysisCommand:
             betting_config = config.get('betting', {})
             market_config = config.get('market_selection', {})
             
-            # Create request with configuration (removed min/max odds)
+            # Create request with configuration
             request = MarketAnalysisRequest(
                 liquidity_factor=betting_config.get('liquidity_factor', 1.1),
-                max_markets=market_config.get('max_markets', 10),
+                max_markets=market_config.get('max_markets', 1000),
                 dry_run=config.get('system', {}).get('dry_run', True),
                 polling_count=0,
                 max_polling_attempts=market_config.get('max_polling_attempts', 60)
             )
             
             polling_interval = market_config.get('polling_interval_seconds', 60)
+            
+            # Log the market selection settings
+            self.logger.info(
+                f"Market selection settings: "
+                f"max_markets={request.max_markets}, "
+                f"top_markets={market_config.get('top_markets', 10)}, "
+                f"hours_ahead={market_config.get('hours_ahead', 4)}"
+            )
             
             # Start polling for opportunities
             for attempt in range(request.max_polling_attempts):

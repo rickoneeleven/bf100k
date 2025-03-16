@@ -41,7 +41,7 @@ class BettingService:
     
     async def scan_markets(self) -> Optional[Dict]:
         """
-        Scan available markets for betting opportunities.
+        Scan available markets for betting opportunities with focus on high-liquidity markets.
         
         Returns:
             Dict containing betting opportunity if found, None otherwise
@@ -65,20 +65,41 @@ class BettingService:
             self.logger.info(
                 f"Scanning markets - Cycle #{state.current_cycle}, "
                 f"Bet #{state.current_bet_in_cycle + 1} in cycle, "
-                f"Next stake: Ã£{next_stake:.2f}"
+                f"Next stake: £{next_stake:.2f}"
             )
             
-            # Get football markets
+            # Get football markets for the next 4 hours
             market_config = self.config.get('market_selection', {})
-            max_markets = 1000  # Effectively remove the limit
-            markets = await self.betfair_client.get_football_markets(max_markets)
+            max_markets = market_config.get('max_markets', 1000)  # Request a large number of markets
+            hours_ahead = market_config.get('hours_ahead', 4)     # Look 4 hours ahead
+            markets = await self.betfair_client.get_football_markets(max_markets, hours_ahead)
             
             if not markets:
                 self.logger.info("No markets found")
                 return None
             
-            # Analyze each market sequentially
-            for market in markets:
+            # Markets should already be sorted by MAXIMUM_TRADED from the API call
+            # Take only the top N markets with the highest traded volume
+            top_markets_limit = market_config.get('top_markets', 10)  # Default to top 10
+            top_markets = markets[:top_markets_limit]
+            
+            self.logger.info(f"Analyzing the top {len(top_markets)} markets by traded volume out of {len(markets)} total markets")
+            
+            # Log the selected markets to provide visibility
+            for idx, market in enumerate(top_markets):
+                market_id = market.get('marketId')
+                event = market.get('event', {})
+                event_name = event.get('name', 'Unknown Event')
+                total_matched = market.get('totalMatched', 0)
+                market_start = market.get('marketStartTime', 'Unknown')
+                
+                self.logger.info(
+                    f"Top Market #{idx+1}: {event_name} (ID: {market_id}), "
+                    f"Total Matched: £{total_matched}, Start: {market_start}"
+                )
+            
+            # Analyze each of the top markets sequentially
+            for market in top_markets:
                 market_id = market.get('marketId')
                 event = market.get('event', {})
                 event_name = event.get('name', 'Unknown Event')
@@ -128,9 +149,7 @@ class BettingService:
                 draw_odds = draw_available_to_back.get('price', 0)
                 draw_available_size = draw_available_to_back.get('size', 0)
                 
-                # We've removed the odds range check
-                
-                # Check liquidity
+                # Check liquidity against the stake plus liquidity factor
                 if draw_available_size < next_stake * liquidity_factor:
                     self.logger.debug(
                         f"Insufficient liquidity: {draw_available_size} < "
@@ -156,7 +175,7 @@ class BettingService:
                 # Found a betting opportunity
                 self.logger.info(
                     f"Found betting opportunity: {event_name}, "
-                    f"Draw @ {draw_odds}, Available: Ã£{draw_available_size}"
+                    f"Draw @ {draw_odds}, Available: £{draw_available_size}"
                 )
                 
                 # Create bet details
@@ -176,7 +195,7 @@ class BettingService:
                 return bet_details
             
             # No suitable markets found
-            self.logger.info("No suitable betting opportunities found")
+            self.logger.info("No suitable betting opportunities found in the top markets")
             return None
             
         except Exception as e:
