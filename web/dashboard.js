@@ -15,8 +15,6 @@ let historyData = null;
 let configData = null;
 
 function fetchSystemData() {
-    console.log("Fetching system data...");
-    
     // Create an object to track all fetch promises
     const fetchPromises = {};
     
@@ -30,7 +28,6 @@ function fetchSystemData() {
             return response.json();
         })
         .then(data => {
-            console.log("Betting state data loaded:", data);
             stateData = data;
             return data;
         })
@@ -54,7 +51,6 @@ function fetchSystemData() {
             return response.json();
         })
         .then(data => {
-            console.log("Active bet data loaded:", data);
             // Check if response is empty object
             if (data && Object.keys(data).length === 0) {
                 activeBetData = null;
@@ -79,7 +75,6 @@ function fetchSystemData() {
             return response.json();
         })
         .then(data => {
-            console.log("Bet history data loaded:", data);
             historyData = data;
             return data;
         })
@@ -99,7 +94,6 @@ function fetchSystemData() {
             return response.json();
         })
         .then(data => {
-            console.log("Config data loaded:", data);
             configData = data;
             return data;
         })
@@ -115,7 +109,6 @@ function fetchSystemData() {
             try {
                 // Calculate all derived values
                 const calculatedValues = calculateDerivedValues();
-                console.log("Calculated values:", calculatedValues);
                 
                 // Update UI with calculated values
                 updateSystemStatus(calculatedValues);
@@ -146,7 +139,7 @@ function calculateDerivedValues() {
     let highestBalance = initialStake;
     let nextStake = initialStake;
     
-    // Calculate from bet history
+    // Simple balance tracking to avoid complex bet replay
     if (historyData && historyData.bets && historyData.bets.length > 0) {
         const bets = historyData.bets;
         
@@ -157,63 +150,47 @@ function calculateDerivedValues() {
         
         totalBets = bets.length;
         
-        // Track balance through bet history
-        let runningBalance = initialStake;
+        // Find wins and losses
+        wins = bets.filter(bet => bet.won).length;
+        losses = bets.filter(bet => !bet.won).length;
         
+        // Total money won
+        totalMoneyWon = bets.filter(bet => bet.won)
+            .reduce((sum, bet) => sum + (bet.profit || 0), 0);
+            
+        // Total commission paid
+        totalCommissionPaid = bets.filter(bet => bet.won)
+            .reduce((sum, bet) => sum + (bet.commission || 0), 0);
+            
+        // Find the winning bet with largest profit
+        const maxWinningBet = [...bets].filter(bet => bet.won)
+            .sort((a, b) => (b.profit || 0) - (a.profit || 0))[0];
+            
+        if (maxWinningBet) {
+            // Set highest balance to initial stake + highest profit
+            highestBalance = initialStake + (maxWinningBet.profit || 0);
+        }
+        
+        // Get current balance from most recent win/loss sequence
+        currentBalance = initialStake;
         sortedBets.forEach(bet => {
-            const stake = bet.stake || 0;
-            
-            // Deduct stake from balance
-            runningBalance -= stake;
-            
             if (bet.won) {
-                wins++;
-                const profit = bet.profit || 0;
-                const commission = bet.commission || 0;
-                
-                totalMoneyWon += profit;
-                totalCommissionPaid += commission;
-                
-                // Add stake back plus profit when won
-                runningBalance += stake + profit;
-                
-                // Set next stake to last winning profit
-                nextStake = profit;
+                currentBalance += (bet.profit || 0);
+                nextStake = bet.profit || 0;
             } else {
-                losses++;
-                
-                // Stake is already deducted, no addition needed for loss
-                
-                // Reset next stake to initial stake after a loss
+                currentBalance -= (bet.stake || 0);
                 nextStake = initialStake;
-            }
-            
-            // Track highest balance after each transaction
-            if (runningBalance > highestBalance) {
-                highestBalance = runningBalance;
             }
         });
         
-        // Set current balance to final running balance
-        currentBalance = runningBalance;
-        
-        // If we have active bet, the stake is already deducted from balance
-        // but we should ensure next stake is correct based on last settlement
+        // If there's an active bet, the stake is already deducted from balance
+        if (activeBetData && Object.keys(activeBetData).length > 0) {
+            // Nothing to do - balance already accounts for active bet stake
+        }
     }
     
     // Calculate win rate
     const winRate = totalBets > 0 ? (wins / totalBets) * 100 : 0;
-    
-    // Calculate total lost stakes (sum of stakes from losing bets)
-    const totalLostStakes = losses > 0 ? 
-        historyData?.bets
-            .filter(bet => !bet.won)
-            .reduce((sum, bet) => sum + (bet.stake || 0), 0) : 0;
-    
-    // Calculate current cycle and bet in cycle from state data
-    // Fallback to state data if available
-    const currentCycle = stateData?.current_cycle || 1;
-    const currentBetInCycle = stateData?.current_bet_in_cycle || 0;
     
     // Calculate total profit/loss directly
     const totalProfitLoss = currentBalance - initialStake;
@@ -221,15 +198,14 @@ function calculateDerivedValues() {
     return {
         currentBalance,
         targetAmount: stateData?.target_amount || 50000.0,
-        currentCycle,
-        currentBetInCycle,
+        currentCycle: stateData?.current_cycle || 1,
+        currentBetInCycle: stateData?.current_bet_in_cycle || 0,
         initialStake,
         nextStake,
         totalBets,
         wins,
         losses,
         winRate,
-        totalLostStakes,
         totalMoneyWon,
         totalProfitLoss,
         highestBalance,
