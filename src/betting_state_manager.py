@@ -140,13 +140,15 @@ class BettingStateManager:
     def get_next_stake(self) -> float:
         """
         Calculate the stake for the next bet based on the compound strategy.
+        Use the full account balance (last winning profit + starting stake)
         
         Returns:
             Next stake amount
         """
-        # Compound strategy: use last winning profit if available
+        # Compound strategy: use last winning profit + starting stake if available 
         if self.state.last_winning_profit > 0:
-            return self.state.last_winning_profit
+            total_stake = self.state.last_winning_profit + self.state.starting_stake
+            return total_stake
         
         # Otherwise, use starting stake
         return self.state.starting_stake

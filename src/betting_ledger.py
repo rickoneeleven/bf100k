@@ -250,7 +250,7 @@ class BettingLedger:
     async def get_next_stake(self) -> float:
         """
         Get the stake amount for the next bet based on the compound strategy
-        using only the previous bet's profit
+        using the full account balance (profit + initial stake)
         
         Returns:
             Stake amount for the next bet
@@ -258,17 +258,18 @@ class BettingLedger:
         try:
             # Get current ledger information
             ledger = await self.get_ledger()
+            initial_stake = ledger.get("starting_stake", 1.0)
             
             # Check if we have a previous winning profit to use
             last_winning_profit = await self.event_store.get_last_winning_profit()
             
             if last_winning_profit > 0:
-                # We have a previous winning profit, use it regardless of bet cycle
-                self.logger.info(f"Next stake calculated as £{last_winning_profit:.2f} based on compound strategy (last_winning_profit)")
-                return last_winning_profit
+                # We have a previous winning profit, use profit + initial stake for full account balance
+                total_stake = last_winning_profit + initial_stake
+                self.logger.info(f"Next stake calculated as £{total_stake:.2f} based on compound strategy (profit + initial stake)")
+                return total_stake
                     
             # Otherwise, use the initial stake
-            initial_stake = ledger.get("starting_stake", 1.0)
             self.logger.info(f"Using initial stake: £{initial_stake:.2f} (no previous winning profit)")
             return initial_stake
         

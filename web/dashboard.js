@@ -176,7 +176,8 @@ function calculateDerivedValues() {
         sortedBets.forEach(bet => {
             if (bet.won) {
                 currentBalance += (bet.profit || 0);
-                nextStake = bet.profit || 0;
+                // For next stake, use profit + initial stake (full balance)
+                nextStake = (bet.profit || 0) + initialStake;
             } else {
                 currentBalance -= (bet.stake || 0);
                 nextStake = initialStake;
