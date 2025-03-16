@@ -2,7 +2,7 @@
 main.py
 
 Entry point for the betting system with simplified flow and command-line interface.
-Updated to use the new config file location.
+Updated to use the new config file location and enhanced active bet information.
 """
 
 import os
@@ -11,6 +11,7 @@ import signal
 import logging
 import select
 import sys
+import json
 from pathlib import Path
 from dotenv import load_dotenv
 from datetime import datetime, timezone
@@ -28,10 +29,11 @@ shutdown_event = None
 class CommandHandler:
     """Handles command-line input and operations."""
     
-    def __init__(self, betting_service: BettingService, state_manager: BettingStateManager, config_manager: ConfigManager):
+    def __init__(self, betting_service: BettingService, state_manager: BettingStateManager, config_manager: ConfigManager, betting_system=None):
         self.betting_service = betting_service
         self.state_manager = state_manager
         self.config_manager = config_manager
+        self.betting_system = betting_system  # Add betting_system reference
         self.should_exit = False
         self.logger = logging.getLogger('CommandHandler')
         
@@ -174,33 +176,73 @@ class CommandHandler:
         print("ACTIVE BET DETAILS")
         print("="*75)
         
+        # Get enhanced data if betting system is available
+        enhanced_data = None
+        if self.betting_system:
+            enhanced_bets = await self.betting_system.get_active_bet_details()
+            if enhanced_bets and len(enhanced_bets) > 0:
+                enhanced_data = enhanced_bets[0]
+        
+        # Use enhanced data if available, otherwise fall back to basic data
+        display_data = enhanced_data if enhanced_data else active_bet
+        
         # Basic details
-        print(f"Market ID: {active_bet.get('market_id')}")
-        print(f"Event: {active_bet.get('event_name', 'Unknown Event')}")
-        print(f"Cycle #{active_bet.get('cycle_number', '?')}, Bet #{active_bet.get('bet_in_cycle', '?')} in cycle")
-        print(f"Selection: {active_bet.get('team_name', 'Unknown')} @ {active_bet.get('odds', 0.0)}")
-        print(f"Selection ID: {active_bet.get('selection_id')}")
-        print(f"Stake: £{active_bet.get('stake', 0.0):.2f}")
+        print(f"Market ID: {display_data.get('market_id')}")
+        print(f"Event: {display_data.get('event_name', 'Unknown Event')}")
+        print(f"Cycle #{display_data.get('cycle_number', '?')}, Bet #{display_data.get('bet_in_cycle', '?')} in cycle")
+        print(f"Selection: {display_data.get('team_name', 'Unknown')} @ {display_data.get('odds', 0.0)}")
+        print(f"Selection ID: {display_data.get('selection_id')}")
+        print(f"Stake: £{display_data.get('stake', 0.0):.2f}")
         
         # Market start time
-        market_start_time = active_bet.get('market_start_time')
+        market_start_time = display_data.get('market_start_time')
         if market_start_time:
             try:
                 start_dt = datetime.fromisoformat(market_start_time.replace('Z', '+00:00'))
                 formatted_time = start_dt.strftime('%Y-%m-%d %H:%M:%S')
-                print(f"Kickoff Time: {formatted_time}")
+                print(f"Kick Off Time: {formatted_time}")
             except:
-                print(f"Kickoff Time: {market_start_time}")
+                print(f"Kick Off Time: {market_start_time}")
+        
+        # Enhanced market data if available
+        if enhanced_data and 'current_market' in enhanced_data:
+            market_info = enhanced_data['current_market']
+            
+            # In-play status
+            is_inplay = market_info.get('inplay', False)
+            market_status = market_info.get('status', 'Unknown')
+            print(f"In Play Status: {market_status} {'(In Play)' if is_inplay else ''}")
+            
+            # Current odds
+            runners = market_info.get('runners', [])
+            if runners:
+                # Sort runners by sortPriority
+                sorted_runners = sorted(runners, key=lambda r: r.get('sortPriority', 999))
+                
+                print("\nCurrent Market Odds:")
+                for runner in sorted_runners:
+                    selection_id = runner.get('selectionId')
+                    team_name = runner.get('teamName', runner.get('runnerName', 'Unknown'))
+                    
+                    # Get current best back price
+                    back_prices = runner.get('ex', {}).get('availableToBack', [])
+                    current_odds = back_prices[0].get('price', 0.0) if back_prices else 0.0
+                    
+                    # Mark our selection
+                    is_our_selection = selection_id == display_data.get('selection_id')
+                    selection_marker = " ← OUR BET" if is_our_selection else ""
+                    
+                    print(f"  {team_name}: {current_odds}{selection_marker}")
         
         # Placement time
-        placement_time = active_bet.get('timestamp')
+        placement_time = display_data.get('timestamp')
         if placement_time:
             try:
                 dt = datetime.fromisoformat(placement_time)
                 formatted_time = dt.strftime('%Y-%m-%d %H:%M:%S')
-                print(f"Bet Placed: {formatted_time}")
+                print(f"\nBet Placed: {formatted_time}")
             except:
-                print(f"Bet Placed: {placement_time}")
+                print(f"\nBet Placed: {placement_time}")
         
         print("="*75 + "\n")
     
@@ -382,6 +424,47 @@ async def run_command_loop(cmd_handler: CommandHandler, betting_service: Betting
     finally:
         await betting_service.stop()
 
+async def update_enhanced_bet_data(betting_system, data_dir: str = 'web/data/betting', interval: int = 30) -> None:
+    """
+    Background task to periodically update active bet data with enhanced information
+    
+    Args:
+        betting_system: Betting system instance
+        data_dir: Directory for data files
+        interval: Update interval in seconds
+    """
+    logger = logging.getLogger('EnhancedBetUpdater')
+    logger.info("Starting enhanced bet data updater task")
+    
+    data_path = Path(data_dir)
+    active_bet_file = data_path / 'active_bet.json'
+    
+    try:
+        while not shutdown_event.is_set():
+            try:
+                # Only update if the file exists and there's an active bet
+                if active_bet_file.exists():
+                    # Get enhanced active bet details
+                    enhanced_bets = await betting_system.get_active_bet_details()
+                    
+                    if enhanced_bets and len(enhanced_bets) > 0:
+                        # Write the first active bet with enhanced data
+                        with open(active_bet_file, 'w') as f:
+                            json.dump(enhanced_bets[0], f, indent=2)
+                            logger.info("Updated active_bet.json with enhanced market data")
+                    else:
+                        logger.debug("No active bets to enhance")
+                else:
+                    logger.debug("No active_bet.json file found")
+                    
+            except Exception as e:
+                logger.error(f"Error updating enhanced bet data: {str(e)}")
+                
+            # Wait for next update
+            await asyncio.sleep(interval)
+    except asyncio.CancelledError:
+        logger.info("Enhanced bet data updater task cancelled")
+
 async def main():
     """Entry point for the betting system."""
     global shutdown_event
@@ -419,6 +502,23 @@ async def main():
             logger.error("Failed to login to Betfair")
             print("Failed to login to Betfair - check credentials and certificates")
             return
+        
+        # Import these here to avoid circular imports
+        from .betting_system import BettingSystem
+        from .repositories.account_repository import AccountRepository
+        from .repositories.bet_repository import BetRepository
+        
+        # Initialize additional components needed for BettingSystem
+        account_repository = AccountRepository()
+        bet_repository = BetRepository()
+        
+        # Initialize betting system for enhanced data
+        betting_system = BettingSystem(
+            betfair_client=betfair_client,
+            bet_repository=bet_repository,
+            account_repository=account_repository,
+            config_manager=config_manager
+        )
             
         # Initialize betting service
         betting_service = BettingService(
@@ -427,8 +527,13 @@ async def main():
             config_manager=config_manager
         )
         
-        # Initialize command handler
-        cmd_handler = CommandHandler(betting_service, state_manager, config_manager)
+        # Initialize command handler with betting_system reference
+        cmd_handler = CommandHandler(
+            betting_service, 
+            state_manager, 
+            config_manager,
+            betting_system
+        )
         
         # Show help
         await cmd_handler.cmd_help()
@@ -436,7 +541,12 @@ async def main():
         # Show initial status
         await cmd_handler.cmd_status()
         
-        # Start tasks
+        # Start the enhanced bet data updater task
+        enhanced_data_task = asyncio.create_task(
+            update_enhanced_bet_data(betting_system)
+        )
+        
+        # Start main tasks
         service_task = asyncio.create_task(betting_service.start())
         command_task = asyncio.create_task(run_command_loop(cmd_handler, betting_service))
         
@@ -452,8 +562,11 @@ async def main():
         if not command_task.done():
             command_task.cancel()
             
+        if not enhanced_data_task.done():
+            enhanced_data_task.cancel()
+            
         # Wait for tasks to complete
-        await asyncio.gather(service_task, command_task, return_exceptions=True)
+        await asyncio.gather(service_task, command_task, enhanced_data_task, return_exceptions=True)
         
         logger.info("System shutdown complete")
         

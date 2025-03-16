@@ -163,3 +163,8 @@ pre {
         grid-template-columns: 1fr;
     }
 }
+
+.value.positive {
+    color: var(--success-color);
+    font-weight: bold;
+}

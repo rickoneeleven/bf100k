@@ -285,12 +285,106 @@ function updateActiveBet() {
     document.getElementById('stake').textContent = `£${activeBetData.stake ? activeBetData.stake.toFixed(2) : '0.00'}`;
     document.getElementById('market-id').textContent = activeBetData.market_id || 'N/A';
     
-    // Format timestamp
+    // Format placement timestamp
     if (activeBetData.timestamp) {
         const placedTime = new Date(activeBetData.timestamp);
         document.getElementById('placed-time').textContent = placedTime.toLocaleString();
     } else {
         document.getElementById('placed-time').textContent = 'N/A';
+    }
+    
+    // Display kick off time
+    if (activeBetData.market_start_time) {
+        const kickOffTime = new Date(activeBetData.market_start_time);
+        document.getElementById('kick-off-time').textContent = kickOffTime.toLocaleString();
+    } else {
+        document.getElementById('kick-off-time').textContent = 'N/A';
+    }
+
+    // Display in play status
+    let inPlayStatus = 'Unknown';
+    if (activeBetData.current_market) {
+        inPlayStatus = activeBetData.current_market.inplay ? 'In Play' : 'Not Started';
+        if (activeBetData.current_market.status && activeBetData.current_market.status !== 'OPEN') {
+            inPlayStatus = activeBetData.current_market.status;
+        }
+    }
+    document.getElementById('in-play-status').textContent = inPlayStatus;
+
+    // Variables to track odds and elements for highlighting
+    let team1Element = document.getElementById('team1-odds');
+    let team2Element = document.getElementById('team2-odds');
+    let drawElement = document.getElementById('draw-odds');
+    let team1Odds = null;
+    let team2Odds = null;
+    let drawOdds = null;
+    
+    // Display current odds for team 1, team 2, and draw
+    if (activeBetData.current_market && activeBetData.current_market.runners) {
+        const runners = activeBetData.current_market.runners;
+        
+        // Sort runners by sortPriority
+        const sortedRunners = [...runners].sort((a, b) => {
+            return (a.sortPriority || 999) - (b.sortPriority || 999);
+        });
+        
+        // Find team 1, team 2, and draw runners
+        const team1Runner = sortedRunners.find(r => r.sortPriority === 1);
+        const team2Runner = sortedRunners.find(r => r.sortPriority === 2);
+        const drawRunner = sortedRunners.find(r => {
+            return r.selectionId === 58805 || 
+                (r.teamName && r.teamName.toLowerCase() === 'draw');
+        });
+        
+        // Update odds display for team 1
+        if (team1Runner && team1Runner.ex && team1Runner.ex.availableToBack && team1Runner.ex.availableToBack.length > 0) {
+            team1Odds = team1Runner.ex.availableToBack[0].price || null;
+            team1Element.textContent = team1Odds || 'N/A';
+        } else {
+            team1Element.textContent = 'N/A';
+        }
+        
+        // Update odds display for team 2
+        if (team2Runner && team2Runner.ex && team2Runner.ex.availableToBack && team2Runner.ex.availableToBack.length > 0) {
+            team2Odds = team2Runner.ex.availableToBack[0].price || null;
+            team2Element.textContent = team2Odds || 'N/A';
+        } else {
+            team2Element.textContent = 'N/A';
+        }
+        
+        // Update odds display for draw
+        if (drawRunner && drawRunner.ex && drawRunner.ex.availableToBack && drawRunner.ex.availableToBack.length > 0) {
+            drawOdds = drawRunner.ex.availableToBack[0].price || null;
+            drawElement.textContent = drawOdds || 'N/A';
+        } else {
+            drawElement.textContent = 'N/A';
+        }
+        
+        // Reset all classes before highlighting
+        team1Element.className = 'value';
+        team2Element.className = 'value';
+        drawElement.className = 'value';
+        
+        // Find lowest odds and highlight in green
+        if (team1Odds !== null && team2Odds !== null && drawOdds !== null) {
+            const allOdds = [
+                { element: team1Element, odds: team1Odds },
+                { element: team2Element, odds: team2Odds },
+                { element: drawElement, odds: drawOdds }
+            ];
+            
+            // Sort by odds (lowest first)
+            allOdds.sort((a, b) => a.odds - b.odds);
+            
+            // Highlight the lowest odds in green
+            if (allOdds.length > 0 && allOdds[0].odds) {
+                allOdds[0].element.className = 'value positive';
+            }
+        }
+    } else {
+        team1Element.textContent = 'N/A';
+        team2Element.textContent = 'N/A';
+        drawElement.textContent = 'N/A';
     }
 }
 
