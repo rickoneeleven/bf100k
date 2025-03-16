@@ -65,7 +65,7 @@ class BettingService:
             self.logger.info(
                 f"Scanning markets - Cycle #{state.current_cycle}, "
                 f"Bet #{state.current_bet_in_cycle + 1} in cycle, "
-                f"Next stake: ÃÂ£{next_stake:.2f}"
+                f"Next stake: Ã£{next_stake:.2f}"
             )
             
             # Get football markets
@@ -156,7 +156,7 @@ class BettingService:
                 # Found a betting opportunity
                 self.logger.info(
                     f"Found betting opportunity: {event_name}, "
-                    f"Draw @ {draw_odds}, Available: ÃÂ£{draw_available_size}"
+                    f"Draw @ {draw_odds}, Available: Ã£{draw_available_size}"
                 )
                 
                 # Create bet details
@@ -199,7 +199,7 @@ class BettingService:
                 f"Placing bet on event: {bet_details.get('event_name')}, "
                 f"Selection: {bet_details.get('team_name')}, "
                 f"Odds: {bet_details.get('odds')}, "
-                f"Stake: Â£{bet_details.get('stake')}"
+                f"Stake: £{bet_details.get('stake')}"
             )
             
             if self.dry_run:
@@ -208,7 +208,7 @@ class BettingService:
                     f"Match: {bet_details.get('event_name')}, "
                     f"Selection: {bet_details.get('team_name')}, "
                     f"Odds: {bet_details.get('odds')}, "
-                    f"Stake: Â£{bet_details.get('stake')}"
+                    f"Stake: £{bet_details.get('stake')}"
                 )
                 
                 # Record bet in state manager
@@ -283,16 +283,16 @@ class BettingService:
                 net_profit = gross_profit - commission
                 
                 self.logger.info(
-                    f"Bet won! Gross profit: Â£{gross_profit:.2f}, "
-                    f"Commission: Â£{commission:.2f}, "
-                    f"Net profit: Â£{net_profit:.2f}"
+                    f"Bet won! Gross profit: £{gross_profit:.2f}, "
+                    f"Commission: £{commission:.2f}, "
+                    f"Net profit: £{net_profit:.2f}"
                 )
             else:
                 gross_profit = 0
                 commission = 0
                 net_profit = 0
                 
-                self.logger.info(f"Bet lost. Lost stake: Â£{stake:.2f}")
+                self.logger.info(f"Bet lost. Lost stake: £{stake:.2f}")
             
             # Record result in state manager
             self.state_manager.record_bet_result(

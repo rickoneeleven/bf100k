@@ -172,7 +172,7 @@ class MarketAnalysisCommand:
             # Get the correct stake amount from the event-sourced betting ledger
             stake_amount = await self.betting_ledger.get_next_stake()
             
-            self.logger.info(f"Using stake amount: Â£{stake_amount} for next bet (compound strategy)")
+            self.logger.info(f"Using stake amount: £{stake_amount} for next bet (compound strategy)")
             
             # Find the Draw selection and team runners
             draw_runner = None
@@ -239,7 +239,7 @@ class MarketAnalysisCommand:
                     f"Found betting opportunity on Draw: {event_name}, "
                     f"Odds: {draw_odds}, "
                     f"Selection ID: {draw_runner.get('selectionId')}, "
-                    f"Stake: Â£{stake_amount}"
+                    f"Stake: £{stake_amount}"
                 )
                 
                 return await self._create_betting_opportunity(

@@ -455,7 +455,7 @@ class CommandProcessor:
         
         print(f"Event: {event_name}")
         print(f"Selection: {team_name} @ {odds}")
-        print(f"Stake: Â£{stake:.2f}")
+        print(f"Stake: £{stake:.2f}")
         
         # Ask for confirmation
         print("\nAre you sure you want to cancel this bet?")
@@ -483,7 +483,7 @@ class CommandProcessor:
         self.state_manager._save_state()
         
         print("\nBet successfully canceled. System is ready to find a new bet.")
-        print(f"Â£{stake:.2f} has been returned to your balance.")
+        print(f"£{stake:.2f} has been returned to your balance.")
         print("="*75 + "\n")
         
     except Exception as e:

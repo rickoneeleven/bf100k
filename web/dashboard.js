@@ -33,7 +33,7 @@ function fetchSystemData() {
         })
         .catch(error => {
             console.error('Error fetching system data:', error);
-            document.getElementById('balance').textContent = 'Error loading data';
+            document.getElementById('target').textContent = 'Error loading data';
             return null;
         });
     
@@ -234,7 +234,6 @@ function fetchLogData() {
 }
 
 function updateSystemStatus(calculatedValues) {
-    document.getElementById('balance').textContent = `£${calculatedValues.currentBalance.toFixed(2)}`;
     document.getElementById('target').textContent = `£${calculatedValues.targetAmount.toFixed(2)}`;
     document.getElementById('cycle').textContent = `#${calculatedValues.currentCycle}`;
     document.getElementById('bet-in-cycle').textContent = `#${calculatedValues.currentBetInCycle}`;
@@ -263,7 +262,6 @@ function updateStatistics(calculatedValues) {
     document.getElementById('total-bets').textContent = calculatedValues.totalBets;
     document.getElementById('win-rate').textContent = `${calculatedValues.winRate.toFixed(1)}%`;
     document.getElementById('win-loss').textContent = `${calculatedValues.wins} / ${calculatedValues.losses}`;
-    document.getElementById('money-won').textContent = `£${calculatedValues.totalMoneyWon.toFixed(2)}`;
     document.getElementById('commission-paid').textContent = `£${calculatedValues.totalCommissionPaid.toFixed(2)}`;
     document.getElementById('highest-balance').textContent = `£${calculatedValues.highestBalance.toFixed(2)}`;
 }
