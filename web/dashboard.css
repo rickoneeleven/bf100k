@@ -91,6 +91,16 @@ h1 {
     margin-top: 5px;
 }
 
+.positive {
+    color: var(--success-color);
+    font-weight: bold;
+}
+
+.negative {
+    color: var(--error-color);
+    font-weight: bold;
+}
+
 .active-bet, .bet-history {
     grid-column: span 2;
 }

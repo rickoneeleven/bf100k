@@ -8,11 +8,20 @@ document.addEventListener('DOMContentLoaded', function() {
     setInterval(fetchLogData, 60000);
 });
 
+// Global variables to store all data for cross-calculations
+let stateData = null;
+let activeBetData = null;
+let historyData = null;
+let configData = null;
+
 function fetchSystemData() {
     console.log("Fetching system data...");
     
-    // Fetch betting state data - using relative paths based on observed server structure
-    fetch('./data/betting/betting_state.json')
+    // Create an object to track all fetch promises
+    const fetchPromises = {};
+    
+    // Fetch betting state data
+    fetchPromises.state = fetch('./data/betting/betting_state.json')
         .then(response => {
             if (!response.ok) {
                 console.error(`HTTP error! Status: ${response.status} for betting_state.json`);
@@ -22,16 +31,17 @@ function fetchSystemData() {
         })
         .then(data => {
             console.log("Betting state data loaded:", data);
-            updateSystemStatus(data);
-            updateStatistics(data);
+            stateData = data;
+            return data;
         })
         .catch(error => {
             console.error('Error fetching system data:', error);
             document.getElementById('balance').textContent = 'Error loading data';
+            return null;
         });
     
     // Fetch active bet data
-    fetch('./data/betting/active_bet.json')
+    fetchPromises.activeBet = fetch('./data/betting/active_bet.json')
         .then(response => {
             if (!response.ok) {
                 // If file returns 404, treat as no active bet
@@ -45,17 +55,22 @@ function fetchSystemData() {
         })
         .then(data => {
             console.log("Active bet data loaded:", data);
-            updateActiveBet(data);
+            // Check if response is empty object
+            if (data && Object.keys(data).length === 0) {
+                activeBetData = null;
+                return null;
+            }
+            activeBetData = data;
+            return data;
         })
         .catch(error => {
             console.error('Error fetching active bet:', error);
-            // If file not found or empty, show no active bet
-            document.getElementById('no-active-bet').style.display = 'block';
-            document.getElementById('active-bet-details').style.display = 'none';
+            activeBetData = null;
+            return null;
         });
     
     // Fetch bet history data
-    fetch('./data/betting/bet_history.json')
+    fetchPromises.history = fetch('./data/betting/bet_history.json')
         .then(response => {
             if (!response.ok) {
                 console.error(`HTTP error! Status: ${response.status} for bet_history.json`);
@@ -65,16 +80,17 @@ function fetchSystemData() {
         })
         .then(data => {
             console.log("Bet history data loaded:", data);
-            updateBetHistory(data);
+            historyData = data;
+            return data;
         })
         .catch(error => {
             console.error('Error fetching bet history:', error);
-            document.getElementById('history-body').innerHTML = 
-                '<tr><td colspan="6">Error loading bet history</td></tr>';
+            historyData = null;
+            return null;
         });
     
     // Fetch configuration data
-    fetch('./config/betting_config.json')
+    fetchPromises.config = fetch('./config/betting_config.json')
         .then(response => {
             if (!response.ok) {
                 console.error(`HTTP error! Status: ${response.status} for betting_config.json`);
@@ -84,12 +100,142 @@ function fetchSystemData() {
         })
         .then(data => {
             console.log("Config data loaded:", data);
-            updateConfigInfo(data);
+            configData = data;
+            return data;
         })
         .catch(error => {
             console.error('Error fetching config data:', error);
-            document.getElementById('mode').textContent = 'Config Error';
+            configData = null;
+            return null;
         });
+    
+    // When all data is fetched, update the UI with recalculated values
+    Promise.all(Object.values(fetchPromises))
+        .then(() => {
+            try {
+                // Calculate all derived values
+                const calculatedValues = calculateDerivedValues();
+                console.log("Calculated values:", calculatedValues);
+                
+                // Update UI with calculated values
+                updateSystemStatus(calculatedValues);
+                updateStatistics(calculatedValues);
+                updateActiveBet();
+                updateBetHistory();
+                updateConfigInfo();
+            } catch (error) {
+                console.error('Error calculating values:', error);
+            }
+        })
+        .catch(error => {
+            console.error('Error updating dashboard:', error);
+        });
+}
+
+function calculateDerivedValues() {
+    // Default values in case data is missing
+    const initialStake = configData?.betting?.initial_stake || 1.0;
+    
+    // Initialize values
+    let currentBalance = initialStake;
+    let totalBets = 0;
+    let wins = 0;
+    let losses = 0;
+    let totalMoneyWon = 0;
+    let totalCommissionPaid = 0;
+    let highestBalance = initialStake;
+    let nextStake = initialStake;
+    
+    // Calculate from bet history
+    if (historyData && historyData.bets && historyData.bets.length > 0) {
+        const bets = historyData.bets;
+        
+        // Sort bets chronologically
+        const sortedBets = bets.sort((a, b) => {
+            return new Date(a.settlement_time) - new Date(b.settlement_time);
+        });
+        
+        totalBets = bets.length;
+        
+        // Track balance through bet history
+        let runningBalance = initialStake;
+        
+        sortedBets.forEach(bet => {
+            const stake = bet.stake || 0;
+            
+            // Deduct stake from balance
+            runningBalance -= stake;
+            
+            if (bet.won) {
+                wins++;
+                const profit = bet.profit || 0;
+                const commission = bet.commission || 0;
+                
+                totalMoneyWon += profit;
+                totalCommissionPaid += commission;
+                
+                // Add stake back plus profit when won
+                runningBalance += stake + profit;
+                
+                // Set next stake to last winning profit
+                nextStake = profit;
+            } else {
+                losses++;
+                
+                // Stake is already deducted, no addition needed for loss
+                
+                // Reset next stake to initial stake after a loss
+                nextStake = initialStake;
+            }
+            
+            // Track highest balance after each transaction
+            if (runningBalance > highestBalance) {
+                highestBalance = runningBalance;
+            }
+        });
+        
+        // Set current balance to final running balance
+        currentBalance = runningBalance;
+        
+        // If we have active bet, the stake is already deducted from balance
+        // but we should ensure next stake is correct based on last settlement
+    }
+    
+    // Calculate win rate
+    const winRate = totalBets > 0 ? (wins / totalBets) * 100 : 0;
+    
+    // Calculate total lost stakes (sum of stakes from losing bets)
+    const totalLostStakes = losses > 0 ? 
+        historyData?.bets
+            .filter(bet => !bet.won)
+            .reduce((sum, bet) => sum + (bet.stake || 0), 0) : 0;
+    
+    // Calculate current cycle and bet in cycle from state data
+    // Fallback to state data if available
+    const currentCycle = stateData?.current_cycle || 1;
+    const currentBetInCycle = stateData?.current_bet_in_cycle || 0;
+    
+    // Calculate total profit/loss directly
+    const totalProfitLoss = currentBalance - initialStake;
+    
+    return {
+        currentBalance,
+        targetAmount: stateData?.target_amount || 50000.0,
+        currentCycle,
+        currentBetInCycle,
+        initialStake,
+        nextStake,
+        totalBets,
+        wins,
+        losses,
+        winRate,
+        totalLostStakes,
+        totalMoneyWon,
+        totalProfitLoss,
+        highestBalance,
+        totalCommissionPaid,
+        lastUpdated: new Date().toISOString()
+    };
 }
 
 function fetchLogData() {
@@ -111,35 +257,44 @@ function fetchLogData() {
         });
 }
 
-function updateSystemStatus(data) {
-    document.getElementById('balance').textContent = `£${data.current_balance.toFixed(2)}`;
-    document.getElementById('target').textContent = `£${data.target_amount.toFixed(2)}`;
-    document.getElementById('cycle').textContent = `#${data.current_cycle}`;
-    document.getElementById('bet-in-cycle').textContent = `#${data.current_bet_in_cycle}`;
-    document.getElementById('next-stake').textContent = `£${data.last_winning_profit > 0 ? data.last_winning_profit.toFixed(2) : data.starting_stake.toFixed(2)}`;
+function updateSystemStatus(calculatedValues) {
+    document.getElementById('balance').textContent = `£${calculatedValues.currentBalance.toFixed(2)}`;
+    document.getElementById('target').textContent = `£${calculatedValues.targetAmount.toFixed(2)}`;
+    document.getElementById('cycle').textContent = `#${calculatedValues.currentCycle}`;
+    document.getElementById('bet-in-cycle').textContent = `#${calculatedValues.currentBetInCycle}`;
+    document.getElementById('next-stake').textContent = `£${calculatedValues.nextStake.toFixed(2)}`;
+    
+    // Add formatting for total profit/loss
+    const profitLossElement = document.getElementById('profit-loss');
+    if (profitLossElement) {
+        const totalProfitLoss = calculatedValues.totalProfitLoss;
+        const sign = totalProfitLoss >= 0 ? '+' : '';
+        profitLossElement.textContent = `${sign}£${totalProfitLoss.toFixed(2)}`;
+        profitLossElement.className = totalProfitLoss >= 0 ? 'value positive' : 'value negative';
+    }
+    
+    // Format highest balance value
+    const highestBalanceElement = document.getElementById('highest-balance');
+    if (highestBalanceElement) {
+        highestBalanceElement.textContent = `£${calculatedValues.highestBalance.toFixed(2)}`;
+    }
     
     // Update last updated timestamp
-    const lastUpdated = new Date(data.last_updated);
-    document.getElementById('last-updated').textContent = lastUpdated.toLocaleString();
+    document.getElementById('last-updated').textContent = new Date().toLocaleString();
 }
 
-function updateStatistics(data) {
-    document.getElementById('total-bets').textContent = data.total_bets_placed;
-    
-    const winRate = data.total_bets_placed > 0 
-        ? ((data.total_wins / data.total_bets_placed) * 100).toFixed(1) 
-        : '0.0';
-    document.getElementById('win-rate').textContent = `${winRate}%`;
-    
-    document.getElementById('win-loss').textContent = `${data.total_wins} / ${data.total_losses}`;
-    document.getElementById('money-lost').textContent = `£${data.total_money_lost.toFixed(2)}`;
-    document.getElementById('commission-paid').textContent = `£${data.total_commission_paid.toFixed(2)}`;
-    document.getElementById('highest-balance').textContent = `£${data.highest_balance.toFixed(2)}`;
+function updateStatistics(calculatedValues) {
+    document.getElementById('total-bets').textContent = calculatedValues.totalBets;
+    document.getElementById('win-rate').textContent = `${calculatedValues.winRate.toFixed(1)}%`;
+    document.getElementById('win-loss').textContent = `${calculatedValues.wins} / ${calculatedValues.losses}`;
+    document.getElementById('money-won').textContent = `£${calculatedValues.totalMoneyWon.toFixed(2)}`;
+    document.getElementById('commission-paid').textContent = `£${calculatedValues.totalCommissionPaid.toFixed(2)}`;
+    document.getElementById('highest-balance').textContent = `£${calculatedValues.highestBalance.toFixed(2)}`;
 }
 
-function updateActiveBet(data) {
+function updateActiveBet() {
     // Check if data is empty or null
-    if (!data || Object.keys(data).length === 0) {
+    if (!activeBetData || Object.keys(activeBetData).length === 0) {
         document.getElementById('no-active-bet').style.display = 'block';
         document.getElementById('active-bet-details').style.display = 'none';
         return;
@@ -149,27 +304,27 @@ function updateActiveBet(data) {
     document.getElementById('no-active-bet').style.display = 'none';
     document.getElementById('active-bet-details').style.display = 'block';
     
-    document.getElementById('event-name').textContent = data.event_name || 'Unknown Event';
-    document.getElementById('selection').textContent = data.team_name || 'Unknown';
-    document.getElementById('odds').textContent = data.odds || 'N/A';
-    document.getElementById('stake').textContent = `£${data.stake ? data.stake.toFixed(2) : '0.00'}`;
-    document.getElementById('market-id').textContent = data.market_id || 'N/A';
+    document.getElementById('event-name').textContent = activeBetData.event_name || 'Unknown Event';
+    document.getElementById('selection').textContent = activeBetData.team_name || 'Unknown';
+    document.getElementById('odds').textContent = activeBetData.odds || 'N/A';
+    document.getElementById('stake').textContent = `£${activeBetData.stake ? activeBetData.stake.toFixed(2) : '0.00'}`;
+    document.getElementById('market-id').textContent = activeBetData.market_id || 'N/A';
     
     // Format timestamp
-    if (data.timestamp) {
-        const placedTime = new Date(data.timestamp);
+    if (activeBetData.timestamp) {
+        const placedTime = new Date(activeBetData.timestamp);
         document.getElementById('placed-time').textContent = placedTime.toLocaleString();
     } else {
         document.getElementById('placed-time').textContent = 'N/A';
     }
 }
 
-function updateBetHistory(data) {
+function updateBetHistory() {
     const historyBody = document.getElementById('history-body');
     historyBody.innerHTML = '';
     
     // Check if data has bets property and it's not empty
-    if (!data || !data.bets || data.bets.length === 0) {
+    if (!historyData || !historyData.bets || historyData.bets.length === 0) {
         const row = document.createElement('tr');
         row.innerHTML = '<td colspan="6">No bet history available</td>';
         historyBody.appendChild(row);
@@ -177,7 +332,7 @@ function updateBetHistory(data) {
     }
     
     // Sort bets by settlement time (newest first)
-    const sortedBets = data.bets.sort((a, b) => {
+    const sortedBets = historyData.bets.sort((a, b) => {
         return new Date(b.settlement_time) - new Date(a.settlement_time);
     });
     
@@ -219,9 +374,9 @@ function updateBetHistory(data) {
     });
 }
 
-function updateConfigInfo(data) {
+function updateConfigInfo() {
     // Display mode (DRY RUN or LIVE)
-    const isDryRun = data.system && data.system.dry_run !== false;
+    const isDryRun = configData && configData.system && configData.system.dry_run !== false;
     document.getElementById('mode').textContent = isDryRun ? 'DRY RUN' : 'LIVE';
     
     if (!isDryRun) {
