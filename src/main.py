@@ -444,21 +444,40 @@ async def update_enhanced_bet_data(betting_system, data_dir: str = 'web/data/bet
             try:
                 # Only update if the file exists and there's an active bet
                 if active_bet_file.exists():
-                    # Get enhanced active bet details
-                    enhanced_bets = await betting_system.get_active_bet_details()
-                    
-                    if enhanced_bets and len(enhanced_bets) > 0:
-                        # Write the first active bet with enhanced data
-                        with open(active_bet_file, 'w') as f:
-                            json.dump(enhanced_bets[0], f, indent=2)
-                            logger.info("Updated active_bet.json with enhanced market data")
-                    else:
-                        logger.debug("No active bets to enhance")
+                    # Read the active bet directly
+                    try:
+                        with open(active_bet_file, 'r') as f:
+                            active_bet = json.load(f)
+                        
+                        # Check if it's a valid bet
+                        if active_bet and isinstance(active_bet, dict) and 'market_id' in active_bet:
+                            market_id = active_bet['market_id']
+                            logger.info(f"Enhancing active bet with market ID: {market_id}")
+                            
+                            # Get fresh market data directly
+                            market_info = await betting_system.betfair_client.get_fresh_market_data(market_id)
+                            
+                            if market_info:
+                                # Add market info to active bet
+                                active_bet['current_market'] = market_info
+                                
+                                # Write back enhanced data
+                                with open(active_bet_file, 'w') as f:
+                                    json.dump(active_bet, f, indent=2)
+                                    logger.info("Updated active_bet.json with enhanced market data")
+                            else:
+                                logger.warning(f"Could not retrieve market data for {market_id}")
+                        else:
+                            logger.debug("No valid active bet found in active_bet.json")
+                    except Exception as e:
+                        logger.error(f"Error processing active_bet.json: {str(e)}")
+                        logger.exception(e)
                 else:
                     logger.debug("No active_bet.json file found")
                     
             except Exception as e:
                 logger.error(f"Error updating enhanced bet data: {str(e)}")
+                logger.exception(e)
                 
             # Wait for next update
             await asyncio.sleep(interval)
