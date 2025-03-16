@@ -76,6 +76,14 @@ class SimpleFileStorage:
             
             # Replace the original file with the temporary file atomically
             shutil.move(temp_file_path, file_path)
+            
+            # Set file permissions to 644 (user:rw-, group:r--, others:r--)
+            # This ensures the web dashboard can read the files
+            os.chmod(file_path, 0o644)
+            
+            # Log the successful write and permissions change
+            self.logger.debug(f"Successfully wrote {filename} with permissions 644")
+            
             return True
         except Exception as e:
             self.logger.error(f"Error writing {filename}: {str(e)}")
