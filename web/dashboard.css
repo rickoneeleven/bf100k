@@ -105,6 +105,32 @@ h1 {
     grid-column: span 2;
 }
 
+/* Active bet grid layout */
+.active-bet-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+}
+
+.bet-details-left, .bet-details-right {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+/* Adjust the layout to match the top cards */
+.active-bet .bet-item {
+    margin-bottom: 10px;
+}
+
+.bet-details-left .bet-item {
+    grid-column: 1;
+}
+
+.bet-details-right .bet-item {
+    grid-column: 2;
+}
+
 table {
     width: 100%;
     border-collapse: collapse;
@@ -160,6 +186,10 @@ pre {
     }
     
     .status-content, .stats-content {
+        grid-template-columns: 1fr;
+    }
+    
+    .active-bet-grid {
         grid-template-columns: 1fr;
     }
 }

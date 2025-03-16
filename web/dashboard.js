@@ -336,6 +336,14 @@ function updateActiveBet() {
                 (r.teamName && r.teamName.toLowerCase() === 'draw');
         });
         
+        // Update team names for labels
+        const team1Name = team1Runner && (team1Runner.teamName || team1Runner.runnerName || 'Team 1');
+        const team2Name = team2Runner && (team2Runner.teamName || team2Runner.runnerName || 'Team 2');
+        
+        // Update label text to include team names
+        document.getElementById('team1-odds-label').textContent = `${team1Name} Win Odds:`;
+        document.getElementById('team2-odds-label').textContent = `${team2Name} Win Odds:`;
+        
         // Update odds display for team 1
         if (team1Runner && team1Runner.ex && team1Runner.ex.availableToBack && team1Runner.ex.availableToBack.length > 0) {
             team1Odds = team1Runner.ex.availableToBack[0].price || null;
