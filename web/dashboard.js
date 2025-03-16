@@ -3,6 +3,17 @@ document.addEventListener('DOMContentLoaded', function() {
     fetchSystemData();
     fetchLogData();
     
+    // Add event listeners for the log show/hide functionality
+    document.getElementById('show-all-logs').addEventListener('click', function(e) {
+        e.preventDefault();
+        showAllLogs();
+    });
+    
+    document.getElementById('show-less-logs').addEventListener('click', function(e) {
+        e.preventDefault();
+        showLessLogs();
+    });
+    
     // Refresh data every 60 seconds
     setInterval(fetchSystemData, 60000);
     setInterval(fetchLogData, 60000);
@@ -301,15 +312,26 @@ function updateActiveBet() {
         document.getElementById('kick-off-time').textContent = 'N/A';
     }
 
-    // Display in play status
+    // Display in play status with color coding
     let inPlayStatus = 'Unknown';
+    let inPlayStatusElement = document.getElementById('in-play-status');
+    
     if (activeBetData.current_market) {
         inPlayStatus = activeBetData.current_market.inplay ? 'In Play' : 'Not Started';
         if (activeBetData.current_market.status && activeBetData.current_market.status !== 'OPEN') {
             inPlayStatus = activeBetData.current_market.status;
         }
     }
-    document.getElementById('in-play-status').textContent = inPlayStatus;
+    inPlayStatusElement.textContent = inPlayStatus;
+    
+    // Add color coding - green for In Play, red for other statuses
+    if (inPlayStatus === 'In Play') {
+        inPlayStatusElement.classList.add('status-inplay');
+        inPlayStatusElement.classList.remove('status-notinplay');
+    } else {
+        inPlayStatusElement.classList.add('status-notinplay');
+        inPlayStatusElement.classList.remove('status-inplay');
+    }
 
     // Variables to track odds and elements for highlighting
     let team1Element = document.getElementById('team1-odds');
@@ -467,17 +489,75 @@ function updateConfigInfo() {
 function updateLogViewer(logData) {
     // Get the log entries element
     const logEntries = document.getElementById('log-entries');
+    const logContainer = document.getElementById('log-container');
     
     // Split the log data into lines
     const lines = logData.split('\n');
     
-    // Take only the last 50 lines
-    const recentLines = lines.slice(-50);
+    // Filter out empty lines
+    const nonEmptyLines = lines.filter(line => line.trim() !== '');
+    
+    // Reverse the order so newest is at top
+    const reversedLines = nonEmptyLines.reverse();
+    
+    // Store all log data in a data attribute for "Show All" functionality
+    logContainer.setAttribute('data-full-log', reversedLines.join('\n'));
+    
+    // Take only the first 10 lines initially
+    const initialLines = reversedLines.slice(0, 10);
     
     // Join the lines back together
-    logEntries.textContent = recentLines.join('\n');
+    logEntries.textContent = initialLines.join('\n');
     
-    // Scroll to the bottom
-    const logContent = document.getElementById('log-content');
-    logContent.scrollTop = logContent.scrollHeight;
+    // Show the "Show All" link if there are more than 10 lines
+    const showAllLink = document.getElementById('show-all-logs');
+    if (reversedLines.length > 10) {
+        showAllLink.style.display = 'block';
+    } else {
+        showAllLink.style.display = 'none';
+    }
+}
+
+// Function to handle "Show All" logs click
+function showAllLogs() {
+    const logEntries = document.getElementById('log-entries');
+    const logContainer = document.getElementById('log-container');
+    const showAllLink = document.getElementById('show-all-logs');
+    
+    // Get the full log data
+    const fullLog = logContainer.getAttribute('data-full-log');
+    
+    // Display all log entries
+    logEntries.textContent = fullLog;
+    
+    // Hide the "Show All" link
+    showAllLink.style.display = 'none';
+    
+    // Show a "Show Less" link instead
+    const showLessLink = document.getElementById('show-less-logs');
+    showLessLink.style.display = 'block';
+}
+
+// Function to handle "Show Less" logs click
+function showLessLogs() {
+    const logEntries = document.getElementById('log-entries');
+    const logContainer = document.getElementById('log-container');
+    const showLessLink = document.getElementById('show-less-logs');
+    
+    // Get the full log data
+    const fullLog = logContainer.getAttribute('data-full-log');
+    
+    // Split into lines and take only the first 10
+    const lines = fullLog.split('\n');
+    const initialLines = lines.slice(0, 10);
+    
+    // Display limited log entries
+    logEntries.textContent = initialLines.join('\n');
+    
+    // Hide the "Show Less" link
+    showLessLink.style.display = 'none';
+    
+    // Show the "Show All" link
+    const showAllLink = document.getElementById('show-all-logs');
+    showAllLink.style.display = 'block';
 }

@@ -6,6 +6,48 @@
     <title>OES Dashboard</title>
     <link rel="stylesheet" href="dashboard.css">
     <meta http-equiv="refresh" content="60">
+    <style>
+        /* Inline styles for status colors */
+        .status-inplay {
+            color: #2ecc71;
+            font-weight: bold;
+        }
+        
+        .status-notinplay {
+            color: #e74c3c;
+            font-weight: bold;
+        }
+        
+        /* Styles for log viewer changes */
+        #log-content {
+            max-height: none;
+            overflow-y: visible;
+            background-color: #f8f8f8;
+            border-radius: 4px;
+            padding: 15px;
+            font-family: monospace;
+            font-size: 0.9rem;
+        }
+        
+        .log-controls {
+            text-align: center;
+            margin-top: 10px;
+        }
+        
+        .log-controls a {
+            display: inline-block;
+            padding: 5px 10px;
+            background-color: #3498db;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            margin: 0 5px;
+        }
+        
+        .log-controls a:hover {
+            background-color: #2980b9;
+        }
+    </style>
 </head>
 <body>
     <div class="container">
@@ -126,35 +168,43 @@
                     </div>
                 </div>
             </div>
+        </div>
 
-            <div class="card bet-history">
-                <h2>Bet History</h2>
-                <div id="bet-history-content">
-                    <table id="history-table">
-                        <thead>
-                            <tr>
-                                <th>Time</th>
-                                <th>Event</th>
-                                <th>Selection</th>
-                                <th>Stake</th>
-                                <th>Result</th>
-                                <th>Profit/Loss</th>
-                            </tr>
-                        </thead>
-                        <tbody id="history-body">
-                            <tr>
-                                <td colspan="6">Loading bet history...</td>
-                            </tr>
-                        </tbody>
-                    </table>
+        <!-- Log viewer moved above bet history -->
+        <div class="card log-viewer">
+            <h2>Latest Log Entries</h2>
+            <div id="log-container">
+                <div id="log-content">
+                    <pre id="log-entries">Loading logs...</pre>
+                </div>
+                <div class="log-controls">
+                    <a href="#" id="show-all-logs" style="display: none;">Show All</a>
+                    <a href="#" id="show-less-logs" style="display: none;">Show Less</a>
                 </div>
             </div>
         </div>
 
-        <div class="card log-viewer">
-            <h2>Latest Log Entries</h2>
-            <div id="log-content">
-                <pre id="log-entries">Loading logs...</pre>
+        <!-- Bet history now after log viewer -->
+        <div class="card bet-history">
+            <h2>Bet History</h2>
+            <div id="bet-history-content">
+                <table id="history-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Event</th>
+                            <th>Selection</th>
+                            <th>Stake</th>
+                            <th>Result</th>
+                            <th>Profit/Loss</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history-body">
+                        <tr>
+                            <td colspan="6">Loading bet history...</td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>
