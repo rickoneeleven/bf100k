@@ -93,7 +93,7 @@ class BetfairClient:
             self.logger.error(f"Exception during login: {str(e)}")
             return False
 
-    async def get_football_markets(self, max_results: int = 10) -> Optional[List[Dict]]:
+    async def get_football_markets(self, max_results: int = 1000) -> Optional[List[Dict]]:
         """Get football Match Odds markets, sorted by matched volume"""
         if not self.session_token:
             self.logger.error('No session token available - please login first')
@@ -102,12 +102,12 @@ class BetfairClient:
         try:
             session = await self.ensure_session()
             
-            # Set time window from now to 12 hours in the future
+            # Set time window from now to 1 hour in the future
             now = datetime.now(timezone.utc)
-            future = now + timedelta(hours=12)
+            future = now + timedelta(hours=1)
             
             today = now.strftime('%Y-%m-%dT%H:%M:%SZ')
-            tomorrow = future.strftime('%Y-%m-%dT%H:%M:%SZ')
+            one_hour_later = future.strftime('%Y-%m-%dT%H:%M:%SZ')
             
             payload = {
                 'jsonrpc': '2.0',
@@ -118,11 +118,11 @@ class BetfairClient:
                         'marketTypeCodes': ['MATCH_ODDS'],
                         'marketStartTime': {
                             'from': today,
-                            'to': tomorrow
-                        },
-                        'inPlayOnly': False
+                            'to': one_hour_later
+                        }
+                        # Removed inPlayOnly filter to include all markets
                     },
-                    'maxResults': max_results,
+                    'maxResults': max_results,  # Higher limit to essentially remove restriction
                     'marketProjection': [
                         'EVENT',
                         'MARKET_START_TIME',

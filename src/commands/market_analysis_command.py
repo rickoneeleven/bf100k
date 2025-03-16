@@ -147,10 +147,7 @@ class MarketAnalysisCommand:
                 self.logger.error(f"Failed to get market data for {market_id}")
                 return None
                 
-            # Skip if market is in-play
-            if market_data.get('inplay'):
-                self.logger.debug(f"Skipping in-play market: {event_name}")
-                return None
+            # We're no longer skipping in-play markets
                 
             # Get event details
             event = market_data.get('event', {})
@@ -175,7 +172,7 @@ class MarketAnalysisCommand:
             # Get the correct stake amount from the event-sourced betting ledger
             stake_amount = await self.betting_ledger.get_next_stake()
             
-            self.logger.info(f"Using stake amount: £{stake_amount} for next bet (compound strategy)")
+            self.logger.info(f"Using stake amount: Â£{stake_amount} for next bet (compound strategy)")
             
             # Find the Draw selection and team runners
             draw_runner = None
@@ -242,7 +239,7 @@ class MarketAnalysisCommand:
                     f"Found betting opportunity on Draw: {event_name}, "
                     f"Odds: {draw_odds}, "
                     f"Selection ID: {draw_runner.get('selectionId')}, "
-                    f"Stake: £{stake_amount}"
+                    f"Stake: Â£{stake_amount}"
                 )
                 
                 return await self._create_betting_opportunity(

@@ -22,12 +22,11 @@ class ConfigManager:
             "betting": {
                 "initial_stake": 1.0,
                 "target_amount": 50000.0,
-                "min_odds": 3.0,
-                "max_odds": 4.0,
+                # Removed min_odds and max_odds since we're no longer using them
                 "liquidity_factor": 1.1,
             },
             "market_selection": {
-                "max_markets": 10,
+                "max_markets": 1000,  # Effectively remove the limit
                 "sport_id": "1",
                 "market_type": "MATCH_ODDS",
                 "polling_interval_seconds": 60

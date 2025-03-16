@@ -54,8 +54,6 @@ class BettingService:
             
             # Get betting configuration
             betting_config = self.config.get('betting', {})
-            min_odds = betting_config.get('min_odds', 3.0)
-            max_odds = betting_config.get('max_odds', 4.0)
             liquidity_factor = betting_config.get('liquidity_factor', 1.1)
             
             # Get next stake amount
@@ -67,12 +65,12 @@ class BettingService:
             self.logger.info(
                 f"Scanning markets - Cycle #{state.current_cycle}, "
                 f"Bet #{state.current_bet_in_cycle + 1} in cycle, "
-                f"Next stake: Â£{next_stake:.2f}"
+                f"Next stake: ÃÂ£{next_stake:.2f}"
             )
             
             # Get football markets
             market_config = self.config.get('market_selection', {})
-            max_markets = market_config.get('max_markets', 10)
+            max_markets = 1000  # Effectively remove the limit
             markets = await self.betfair_client.get_football_markets(max_markets)
             
             if not markets:
@@ -94,10 +92,7 @@ class BettingService:
                     self.logger.warning(f"Could not get data for market {market_id}")
                     continue
                 
-                # Skip in-play markets
-                if market_data.get('inplay'):
-                    self.logger.debug(f"Skipping in-play market: {event_name}")
-                    continue
+                # We're no longer skipping in-play markets
                 
                 # Get event details
                 event_id = event.get('id', 'Unknown')
@@ -133,10 +128,7 @@ class BettingService:
                 draw_odds = draw_available_to_back.get('price', 0)
                 draw_available_size = draw_available_to_back.get('size', 0)
                 
-                # Check if Draw odds are within target range
-                if not (min_odds <= draw_odds <= max_odds):
-                    self.logger.debug(f"Draw odds {draw_odds} outside target range ({min_odds}-{max_odds})")
-                    continue
+                # We've removed the odds range check
                 
                 # Check liquidity
                 if draw_available_size < next_stake * liquidity_factor:
@@ -146,10 +138,25 @@ class BettingService:
                     )
                     continue
                 
+                # Get odds for both teams to check if Draw odds are higher
+                team_runners = [r for r in runners if r != draw_runner]
+                team_odds = []
+                
+                for team_runner in team_runners:
+                    team_ex = team_runner.get('ex', {})
+                    team_available_to_back = team_ex.get('availableToBack', [{}])[0]
+                    if team_available_to_back:
+                        team_odds.append(team_available_to_back.get('price', 0))
+                
+                # Check if Draw odds are higher than both team odds
+                if len(team_odds) >= 2 and not all(draw_odds > team_odd for team_odd in team_odds):
+                    self.logger.debug(f"Draw odds {draw_odds} not higher than both team odds {team_odds}")
+                    continue
+                
                 # Found a betting opportunity
                 self.logger.info(
                     f"Found betting opportunity: {event_name}, "
-                    f"Draw @ {draw_odds}, Available: Â£{draw_available_size}"
+                    f"Draw @ {draw_odds}, Available: ÃÂ£{draw_available_size}"
                 )
                 
                 # Create bet details
