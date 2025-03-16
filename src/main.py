@@ -55,6 +55,8 @@ class CommandHandler:
             await self.cmd_history()
         elif cmd in ['odds', 'o']:
             await self.cmd_odds(*args)
+        elif cmd in ['cancel', 'c']:  # Add the cancel command
+            await self.cmd_cancel_bet()
         elif cmd in ['reset', 'r']:
             await self.cmd_reset(*args)
         elif cmd in ['quit', 'exit', 'q']:
@@ -62,6 +64,59 @@ class CommandHandler:
         else:
             print(f"Unknown command: {cmd}")
             print("Type 'help' for a list of available commands.")
+            
+    async def cmd_cancel_bet(self) -> None:
+        """Cancel the current active bet (dry run mode only)"""
+        # Check if in dry run mode
+        config = self.config_manager.get_config()
+        dry_run = config.get('system', {}).get('dry_run', True)
+        
+        if not dry_run:
+            print("\nERROR: Cancel bet command can only be used in dry run mode")
+            return
+            
+        # Get active bet
+        active_bet = self.state_manager.get_active_bet()
+        
+        if not active_bet:
+            print("\nNo active bet to cancel")
+            return
+            
+        print("\n" + "="*75)
+        print("CANCELING ACTIVE BET")
+        print("="*75)
+        
+        # Display bet details being canceled
+        event_name = active_bet.get('event_name', 'Unknown Event')
+        team_name = active_bet.get('team_name', 'Unknown')
+        odds = active_bet.get('odds', 0.0)
+        stake = active_bet.get('stake', 0.0)
+        
+        print(f"Event: {event_name}")
+        print(f"Selection: {team_name} @ {odds}")
+        print(f"Stake: Â£{stake:.2f}")
+        
+        # Ask for confirmation
+        print("\nAre you sure you want to cancel this bet?")
+        print("Type 'yes' to confirm or anything else to cancel.")
+        
+        confirm = input("> ").strip().lower()
+        if confirm != 'yes':
+            print("Bet cancellation aborted.")
+            return
+        
+        # Perform the cancellation
+        
+        # 1. Restore the stake (add back to balance)
+        self.state_manager.update_balance(stake, "Bet cancellation - stake refund")
+        
+        # 2. Clear the active bet
+        self.state_manager.reset_active_bet()
+        
+        # 3. Save updated state
+        print("\nBet successfully canceled. System is ready to find a new bet.")
+        print(f"Â£{stake:.2f} has been returned to your balance.")
+        print("="*75 + "\n")
     
     async def cmd_help(self) -> None:
         """Display help information."""

@@ -353,6 +353,27 @@ class BettingStateManager:
         self._save_state()
         
         self.logger.info(f"Balance updated: £{previous_balance} -> £{self.state.current_balance}")
+        
+    def reset_active_bet(self) -> None:
+        """
+        Reset the active bet state without settling the bet.
+        Only used for cancellations in dry run mode.
+        """
+        self.logger.info("Resetting active bet without settlement (for cancellation)")
+        
+        # Clear active bet
+        self.state.active_bet = None
+        self.storage.write_json('active_bet.json', {})
+        
+        # Decrement bet counters
+        self.state.total_bets_placed -= 1
+        if self.state.current_bet_in_cycle > 0:
+            self.state.current_bet_in_cycle -= 1
+        
+        # Save state
+        self._save_state()
+        
+        self.logger.info("Active bet reset complete")
     
     def get_stats_summary(self) -> Dict:
         """

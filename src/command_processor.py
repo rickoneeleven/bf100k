@@ -32,6 +32,7 @@ class CommandProcessor:
             "history": self.cmd_bet_history,  # New command for bet history
             "odds": self.cmd_odds_range,  # New command for changing odds range
             "debug": self.cmd_debug_info,  # New command for debugging information
+            "cancel": self.cmd_cancel_bet,  # New command for canceling active bet
             "quit": self.cmd_quit,
             "exit": self.cmd_quit
         }
@@ -420,6 +421,75 @@ class CommandProcessor:
             print(f"Error retrieving bet history: {str(e)}")
             self.logger.error(f"Error retrieving bet history: {str(e)}")
             self.logger.exception(e)
+            
+    async def cmd_cancel_bet(self, args: List[str] = None) -> None:
+    """
+    Cancel the current active bet (dry run mode only)
+    This allows for testing selection system changes without waiting for bets to settle
+    """
+    try:
+        # Check if in dry run mode
+        config = self.betting_system.config_manager.get_config()
+        dry_run = config.get('system', {}).get('dry_run', True)
+        
+        if not dry_run:
+            print("\nERROR: Cancel bet command can only be used in dry run mode")
+            return
+            
+        # Get active bet
+        active_bet = self.state_manager.get_active_bet()
+        
+        if not active_bet:
+            print("\nNo active bet to cancel")
+            return
+            
+        print("\n" + "="*75)
+        print("CANCELING ACTIVE BET")
+        print("="*75)
+        
+        # Display bet details being canceled
+        event_name = active_bet.get('event_name', 'Unknown Event')
+        team_name = active_bet.get('team_name', 'Unknown')
+        odds = active_bet.get('odds', 0.0)
+        stake = active_bet.get('stake', 0.0)
+        
+        print(f"Event: {event_name}")
+        print(f"Selection: {team_name} @ {odds}")
+        print(f"Stake: Â£{stake:.2f}")
+        
+        # Ask for confirmation
+        print("\nAre you sure you want to cancel this bet?")
+        print("Type 'yes' to confirm or anything else to cancel.")
+        
+        confirm = input("> ").strip().lower()
+        if confirm != 'yes':
+            print("Bet cancellation aborted.")
+            return
+        
+        # Perform the cancellation
+        
+        # 1. Restore the stake (add back to balance)
+        self.state_manager.update_balance(stake, "Bet cancellation - stake refund")
+        
+        # 2. Clear the active bet
+        self.state_manager.state.active_bet = None
+        self.state_manager.storage.write_json('active_bet.json', {})
+        
+        # 3. Decrement bet counters
+        self.state_manager.state.total_bets_placed -= 1
+        self.state_manager.state.current_bet_in_cycle -= 1
+        
+        # 4. Save updated state
+        self.state_manager._save_state()
+        
+        print("\nBet successfully canceled. System is ready to find a new bet.")
+        print(f"Â£{stake:.2f} has been returned to your balance.")
+        print("="*75 + "\n")
+        
+    except Exception as e:
+        print(f"Error canceling bet: {str(e)}")
+        self.logger.error(f"Error canceling bet: {str(e)}")
+        self.logger.exception(e)
     
     async def cmd_odds_range(self, args: List[str] = None) -> None:
         """View or change target odds range"""
