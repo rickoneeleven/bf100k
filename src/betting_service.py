@@ -42,7 +42,7 @@ class BettingService:
     async def scan_markets(self) -> Optional[Dict]:
         """
         Scan available markets for betting opportunities with focus on high-liquidity markets.
-        Updated to consider any selection (home, away, draw) with odds of 3.5+.
+        Updated to consider only the top 2 favorites with odds of 3.5+.
         
         Returns:
             Dict containing betting opportunity if found, None otherwise
@@ -53,9 +53,10 @@ class BettingService:
                 self.logger.info("Active bet exists - skipping market scan")
                 return None
             
-            # Get betting configuration
             betting_config = self.config.get('betting', {})
             liquidity_factor = betting_config.get('liquidity_factor', 1.1)
+            min_odds = betting_config.get('min_odds', 3.5)
+            max_odds = betting_config.get('max_odds', 10.0)  # Maximum odds threshold to ensure we're betting on favorites
             
             # Get next stake amount
             next_stake = self.state_manager.get_next_stake()
@@ -114,7 +115,7 @@ class BettingService:
                     self.logger.warning(f"Could not get data for market {market_id}")
                     continue
                 
-                # NEW: Check if market has at least 100k matched volume
+                # Check if market has at least 100k matched volume
                 total_matched = market_data.get('totalMatched', 0)
                 if total_matched < 100000:
                     self.logger.info(f"Skipping market with insufficient liquidity: £{total_matched} < £100,000")
@@ -129,8 +130,8 @@ class BettingService:
                 # Sort runners by sortPriority
                 runners = sorted(runners, key=lambda r: r.get('sortPriority', 999))
                 
-                # Check all selections for opportunities and store valid ones
-                valid_opportunities = []
+                # First collect all selections with basic validation
+                all_selections = []
                 
                 for runner in runners:
                     selection_id = runner.get('selectionId')
@@ -149,30 +150,45 @@ class BettingService:
                     
                     self.logger.debug(f"Selection {team_name}: Odds: {back_price}, Available volume: £{available_size}")
                     
-                    # Check if odds are at least 3.5
-                    if back_price < 3.5:
-                        self.logger.debug(f"Odds too low for {team_name}: {back_price} < 3.5")
-                        continue
-                    
-                    # Check liquidity requirement
-                    if available_size < next_stake * liquidity_factor:
-                        self.logger.debug(
-                            f"Insufficient liquidity for {team_name}: {available_size} < "
-                            f"{next_stake * liquidity_factor} (stake * factor)"
-                        )
-                        continue
-                    
-                    # This is a valid opportunity
-                    valid_opportunities.append({
+                    # Add to all selections (no filtering yet)
+                    all_selections.append({
                         'runner': runner,
                         'odds': back_price,
                         'available_volume': available_size,
                         'team_name': team_name
                     })
                 
+                # Sort by odds (lowest first) to identify favorites
+                all_selections.sort(key=lambda x: x['odds'])
+                
+                # Take only the top 2 favorites
+                top_2_favorites = all_selections[:2] if len(all_selections) >= 2 else all_selections
+                
+                # Filter those by odds >= 3.5 and <= 10.0 and sufficient liquidity
+                valid_opportunities = []
+                for selection in top_2_favorites:
+                    # Check if odds are in acceptable range (min_odds to max_odds)
+                    if selection['odds'] < min_odds:
+                        self.logger.debug(f"Odds too low for {selection['team_name']}: {selection['odds']} < {min_odds}")
+                        continue
+                    elif selection['odds'] > max_odds:
+                        self.logger.debug(f"Odds too high for {selection['team_name']}: {selection['odds']} > {max_odds} - not a true favorite")
+                        continue
+                    
+                    # Check liquidity requirement
+                    if selection['available_volume'] < next_stake * liquidity_factor:
+                        self.logger.debug(
+                            f"Insufficient liquidity for {selection['team_name']}: {selection['available_volume']} < "
+                            f"{next_stake * liquidity_factor} (stake * factor)"
+                        )
+                        continue
+                    
+                    # This is a valid opportunity
+                    valid_opportunities.append(selection)
+                
                 # If we have valid opportunities, choose the one with highest odds
                 if valid_opportunities:
-                    # Sort by odds (highest first)
+                    # Sort by odds (highest first) - simplifies selection when multiple options qualify
                     valid_opportunities.sort(key=lambda x: x['odds'], reverse=True)
                     best_opportunity = valid_opportunities[0]
                     

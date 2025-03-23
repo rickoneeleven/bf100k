@@ -135,178 +135,6 @@ class MarketAnalysisCommand:
         except Exception as e:
             self.logger.error(f"Error logging market details: {str(e)}")
 
-    async def _analyze_individual_market(
-        self,
-        market_id: str,
-        event_name: str,
-        request: MarketAnalysisRequest
-    ) -> Optional[Dict]:
-        """
-        Analyze a single market directly with fresh data
-        
-        Args:
-            market_id: Market ID to analyze
-            event_name: Event name for logging
-            request: Analysis request parameters
-            
-        Returns:
-            Betting opportunity if found, None otherwise
-        """
-        try:
-            print(f"\n===== ANALYZING MARKET: {market_id} - {event_name} =====")
-            self.logger.debug(f"Analyzing market {market_id} - {event_name} with fresh data")
-            
-            # Get fresh market data directly with consistent approach
-            market_data = await self.betfair_client.get_fresh_market_data(market_id, price_depth=3)
-            
-            if not market_data:
-                self.logger.error(f"Failed to get market data for {market_id}")
-                return None
-            
-            # Get total matched amount for visibility and filtering
-            total_matched = market_data.get('totalMatched', 0)
-            self.logger.debug(f"Market {market_id} total matched volume: £{total_matched}")
-            
-            # Check if total matched is at least 100k
-            if total_matched < 100000:
-                self.logger.debug(f"Skipping market with insufficient liquidity: £{total_matched} < £100,000")
-                return None
-                
-            # Get event details
-            event = market_data.get('event', {})
-            event_id = event.get('id', 'Unknown')
-            
-            # Process runners with consistent naming
-            runners = market_data.get('runners', [])
-            
-            # Ensure runners are sorted by sortPriority for consistent processing
-            runners = sorted(runners, key=lambda r: r.get('sortPriority', 999))
-            
-            # Log raw runners for debugging
-            self.logger.debug(f"Raw runners by priority:")
-            for i, runner in enumerate(runners):
-                self.logger.debug(f"  {i+1}. ID: {runner.get('selectionId')}, "
-                                f"Priority: {runner.get('sortPriority')}, "
-                                f"Name: {runner.get('runnerName', 'Unknown')}")
-            
-            # Use the selection mapper to derive accurate team mappings
-            runners = await self.selection_mapper.derive_teams_from_event(
-                event_id=event_id,
-                event_name=event_name,
-                runners=runners
-            )
-            
-            # Get the correct stake amount from the event-sourced betting ledger
-            stake_amount = await self.betting_ledger.get_next_stake()
-            
-            self.logger.debug(f"Using stake amount: £{stake_amount} for next bet (compound strategy)")
-            
-            # Create a list of selections with odds and availability
-            selections = []
-            for runner in runners:
-                # Get odds and liquidity
-                ex_data = runner.get('ex', {})
-                back_prices = ex_data.get('availableToBack', [])
-                
-                # Skip runners with no available prices
-                if not back_prices or 'price' not in back_prices[0]:
-                    continue
-                
-                # Extract info
-                selection = {
-                    'runner': runner,
-                    'team_name': runner.get('teamName', 'Unknown'),
-                    'selection_id': runner.get('selectionId'),
-                    'odds': back_prices[0]['price'],
-                    'available_volume': back_prices[0]['size']
-                }
-                selections.append(selection)
-            
-            # If we have fewer than 2 selections, skip this market
-            if len(selections) < 2:
-                self.logger.debug(f"Not enough selections with prices in market (found {len(selections)})")
-                return None
-            
-            # Print all selections for debugging
-            print("\n--- ALL SELECTIONS ---")
-            for i, sel in enumerate(selections):
-                print(f"  {i+1}. {sel['team_name']} @ {sel['odds']} (ID: {sel['selection_id']})")
-            
-            # FIXED SELECTION LOGIC:
-            # Step 1: First identify the top 2 favorites by sorting by odds (lowest first)
-            selections_by_odds = sorted(selections, key=lambda x: x['odds'])
-            top_2_favorites = selections_by_odds[:2]
-            
-            # Log the top 2 favorites for visibility
-            print("\n--- TOP 2 FAVORITES (BY LOWEST ODDS) ---")
-            for i, selection in enumerate(top_2_favorites):
-                print(f"  {i+1}. {selection['team_name']} @ {selection['odds']} (ID: {selection['selection_id']})")
-            
-            # Step 2: Filter the top 2 favorites to only include those with odds >= 3.5
-            valid_selections = [s for s in top_2_favorites if s['odds'] >= 3.5]
-            
-            # Log valid selections
-            print("\n--- VALID SELECTIONS (TOP 2 FAVORITES WITH ODDS >= 3.5) ---")
-            if valid_selections:
-                for i, sel in enumerate(valid_selections):
-                    print(f"  {i+1}. {sel['team_name']} @ {sel['odds']} (ID: {sel['selection_id']})")
-            else:
-                print("  No valid selections found - no top 2 favorite has odds >= 3.5")
-            
-            # If no valid selections, skip this market
-            if not valid_selections:
-                self.logger.info("No selections meet our criteria (must be top 2 favorite AND odds >= 3.5)")
-                return None
-            
-            # Step 3: Sort valid selections by odds (highest first) for best value
-            valid_selections.sort(key=lambda x: x['odds'], reverse=True)
-            best_selection = valid_selections[0]
-            
-            # Log the selected opportunity
-            print(f"\n--- FINAL SELECTION ---")
-            print(f"  Selected: {best_selection['team_name']} @ {best_selection['odds']} (ID: {best_selection['selection_id']})")
-            print(f"  This is a top 2 favorite with odds >= 3.5")
-            
-            self.logger.info(
-                f"Selected opportunity: {best_selection['team_name']} @ {best_selection['odds']} "
-                f"(is a top 2 favorite with odds >= 3.5)"
-            )
-            
-            # Check liquidity requirement
-            meets_criteria, reason = self.validate_market_criteria(
-                best_selection['odds'],
-                best_selection['available_volume'],
-                stake_amount,
-                request
-            )
-            
-            if meets_criteria:
-                self.logger.info(
-                    f"Found betting opportunity: {event_name}, "
-                    f"Selection: {best_selection['team_name']}, "
-                    f"Odds: {best_selection['odds']}, "
-                    f"Stake: £{stake_amount}, "
-                    f"Liquidity: £{best_selection['available_volume']}"
-                )
-                
-                return await self._create_betting_opportunity(
-                    market_id=market_id,
-                    event_id=event_id,
-                    market=market_data,
-                    runner=best_selection['runner'],
-                    odds=best_selection['odds'],
-                    stake=stake_amount,
-                    available_volume=best_selection['available_volume']
-                )
-            else:
-                self.logger.info(f"Selection doesn't meet liquidity criteria: {reason}")
-                return None
-                
-        except Exception as e:
-            self.logger.error(f"Error analyzing individual market: {str(e)}")
-            self.logger.exception(e)
-            return None
-
     async def _create_betting_opportunity(
         self,
         market_id: str,
@@ -435,24 +263,12 @@ class MarketAnalysisCommand:
                 f"for the next {hours_ahead} hours, including in-play markets"
             )
             
-            # Process each top market individually with fresh data
-            for market in top_markets_list:
-                market_id = market.get('marketId')
-                event = market.get('event', {})
-                event_name = event.get('name', 'Unknown')
-                
-                # Analyze individual market with fresh data
-                opportunity = await self._analyze_individual_market(
-                    market_id,
-                    event_name,
-                    request
-                )
-                
-                if opportunity:
-                    return opportunity
+            # As we now rely on BettingService.scan_markets for the actual selection logic,
+            # we're primarily using this class for exploration and debugging purposes
+            self.logger.info("Selection logic is now handled by BettingService.scan_markets")
             
             # No suitable markets found in this polling attempt
-            self.logger.info("No suitable markets found among the top markets")
+            self.logger.info("Analysis complete")
             return None
             
         except Exception as e:
@@ -539,30 +355,10 @@ class MarketAnalysisCommand:
                 f"hours_ahead={market_config.get('hours_ahead', 4)}"
             )
             
-            # Start polling for opportunities
-            for attempt in range(request.max_polling_attempts):
-                # Update polling count
-                request.polling_count = attempt
-                
-                # Check for active bets before each attempt
-                if await self.bet_repository.has_active_bets():
-                    self.logger.info("Active bets exist - stopping market polling")
-                    return None
-                
-                # Analyze markets
-                opportunity = await self.analyze_markets(request)
-                
-                # If opportunity found, return it immediately
-                if opportunity:
-                    return opportunity
-                
-                # Otherwise, wait for the polling interval before next attempt
-                if attempt < request.max_polling_attempts - 1:
-                    self.logger.info(f"Waiting {polling_interval} seconds until next market check")
-                    await asyncio.sleep(polling_interval)
+            # Notify that actual selection logic is now in BettingService
+            self.logger.info("Selection logic is now directly handled by BettingService.scan_markets")
             
-            # No opportunities found after all attempts
-            self.logger.info("No betting opportunities found after all polling attempts")
+            # Return None to indicate no opportunity found
             return None
             
         except Exception as e:
