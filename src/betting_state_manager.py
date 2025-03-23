@@ -3,6 +3,7 @@ betting_state_manager.py
 
 Centralized state manager for betting operations.
 Maintains all betting state in a simple, consistent manner.
+Enhanced to properly handle bet cancellations.
 """
 
 import json
@@ -113,7 +114,7 @@ class BettingStateManager:
         Args:
             initial_stake: Starting stake amount
         """
-        self.logger.info(f"Resetting betting state with initial stake: £{initial_stake}")
+        self.logger.info(f"Resetting betting state with initial stake: Â£{initial_stake}")
         
         self.state = BettingState(
             current_balance=initial_stake,
@@ -134,7 +135,13 @@ class BettingStateManager:
         self._save_state()
         
         # Also reset bet history
-        self.storage.write_json('active_bet.json', {})
+        self.storage.write_json('active_bet.json', {
+            "is_canceled": True,
+            "canceled_at": datetime.now(timezone.utc).isoformat(),
+            "canceled_market_id": None,
+            "status": "RESET",
+            "reason": "System reset"
+        })
         self.storage.write_json('bet_history.json', {"bets": []})
     
     def get_next_stake(self) -> float:
@@ -185,7 +192,7 @@ class BettingStateManager:
         self.logger.info(
             f"Bet placed - Cycle: {self.state.current_cycle}, "
             f"Bet in cycle: {self.state.current_bet_in_cycle}, "
-            f"Stake: £{stake}"
+            f"Stake: Â£{stake}"
         )
     
     def record_bet_result(self, bet_details: Dict, won: bool, profit: float, commission: float = 0.0) -> None:
@@ -205,7 +212,7 @@ class BettingStateManager:
         if won:
             self.logger.info(
                 f"Recording bet win - Selection: {bet_details.get('team_name')}, "
-                f"Profit: £{profit}, Commission: £{commission}"
+                f"Profit: Â£{profit}, Commission: Â£{commission}"
             )
             # Update state for win
             self.state.total_wins += 1
@@ -219,7 +226,7 @@ class BettingStateManager:
         else:
             self.logger.info(
                 f"Recording bet loss - Selection: {bet_details.get('team_name')}, "
-                f"Loss: £{stake}"
+                f"Loss: Â£{stake}"
             )
             # Update state for loss
             self.state.total_losses += 1
@@ -247,7 +254,12 @@ class BettingStateManager:
         
         # Clear active bet
         self.state.active_bet = None
-        self.storage.write_json('active_bet.json', {})
+        self.storage.write_json('active_bet.json', {
+            "is_canceled": False,
+            "is_settled": True,
+            "settlement_time": datetime.now(timezone.utc).isoformat(),
+            "won": won
+        })
         
         # Add to bet history
         history = self.storage.read_json('bet_history.json', {"bets": []})
@@ -266,8 +278,8 @@ class BettingStateManager:
         """
         if self.state.current_balance >= self.state.target_amount:
             self.logger.info(
-                f"Target reached! Balance: £{self.state.current_balance}, "
-                f"Target: £{self.state.target_amount}"
+                f"Target reached! Balance: Â£{self.state.current_balance}, "
+                f"Target: Â£{self.state.target_amount}"
             )
             
             # Reset cycle when target reached
@@ -354,18 +366,29 @@ class BettingStateManager:
         # Save state
         self._save_state()
         
-        self.logger.info(f"Balance updated: £{previous_balance} -> £{self.state.current_balance}")
+        self.logger.info(f"Balance updated: Â£{previous_balance} -> Â£{self.state.current_balance}")
         
     def reset_active_bet(self) -> None:
         """
-        Reset the active bet state without settling the bet.
+        Reset the active bet state without settlement.
         Only used for cancellations in dry run mode.
         """
         self.logger.info("Resetting active bet without settlement (for cancellation)")
         
+        # Backup original bet details for logging
+        original_bet = self.state.active_bet
+        
         # Clear active bet
         self.state.active_bet = None
-        self.storage.write_json('active_bet.json', {})
+        
+        # Instead of writing an empty object, write a special flag object
+        # that explicitly marks this as a canceled bet
+        self.storage.write_json('active_bet.json', {
+            "is_canceled": True,
+            "canceled_at": datetime.now(timezone.utc).isoformat(),
+            "canceled_market_id": original_bet.get('market_id') if original_bet else None,
+            "status": "CANCELED"
+        })
         
         # Decrement bet counters
         self.state.total_bets_placed -= 1

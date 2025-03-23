@@ -3,6 +3,7 @@ main.py
 
 Entry point for the betting system with simplified flow and command-line interface.
 Updated to use the new config file location and enhanced active bet information.
+Enhanced to properly handle canceled bets in the updater task.
 """
 
 import os
@@ -96,7 +97,7 @@ class CommandHandler:
         
         print(f"Event: {event_name}")
         print(f"Selection: {team_name} @ {odds}")
-        print(f"Stake: £{stake:.2f}")
+        print(f"Stake: Â£{stake:.2f}")
         
         # Ask for confirmation
         print("\nAre you sure you want to cancel this bet?")
@@ -117,7 +118,7 @@ class CommandHandler:
         
         # 3. Save updated state
         print("\nBet successfully canceled. System is ready to find a new bet.")
-        print(f"£{stake:.2f} has been returned to your balance.")
+        print(f"Â£{stake:.2f} has been returned to your balance.")
         print("="*75 + "\n")
     
     async def cmd_help(self) -> None:
@@ -141,16 +142,16 @@ class CommandHandler:
         print("="*60)
         print(f"Current Cycle: #{stats['current_cycle']}")
         print(f"Current Bet in Cycle: #{stats['current_bet_in_cycle']}")
-        print(f"Current Balance: £{stats['current_balance']:.2f}")
-        print(f"Next Bet Stake: £{stats['next_stake']:.2f}")
-        print(f"Target Amount: £{stats['target_amount']:.2f}")
+        print(f"Current Balance: Â£{stats['current_balance']:.2f}")
+        print(f"Next Bet Stake: Â£{stats['next_stake']:.2f}")
+        print(f"Target Amount: Â£{stats['target_amount']:.2f}")
         print(f"Total Cycles Completed: {stats['total_cycles']}")
         print(f"Total Bets Placed: {stats['total_bets_placed']}")
         print(f"Successful Bets: {stats['total_wins']}")
         print(f"Win Rate: {stats['win_rate']:.1f}%")
-        print(f"Total Money Lost: £{stats['total_money_lost']:.2f}")
-        print(f"Total Commission Paid: £{stats['total_commission_paid']:.2f}")
-        print(f"Highest Balance Reached: £{stats['highest_balance']:.2f}")
+        print(f"Total Money Lost: Â£{stats['total_money_lost']:.2f}")
+        print(f"Total Commission Paid: Â£{stats['total_commission_paid']:.2f}")
+        print(f"Highest Balance Reached: Â£{stats['highest_balance']:.2f}")
         
         # Show current configuration
         config = self.config_manager.get_config()
@@ -161,7 +162,7 @@ class CommandHandler:
         print("\nCurrent Configuration:")
         print(f"Mode: {'DRY RUN' if config.get('system', {}).get('dry_run', True) else 'LIVE'}")
         print(f"Target Odds Range: {min_odds} - {max_odds}")
-        print(f"Initial Stake: £{betting_config.get('initial_stake', 1.0):.2f}")
+        print(f"Initial Stake: Â£{betting_config.get('initial_stake', 1.0):.2f}")
         print("="*60 + "\n")
     
     async def cmd_bet_details(self) -> None:
@@ -192,7 +193,7 @@ class CommandHandler:
         print(f"Cycle #{display_data.get('cycle_number', '?')}, Bet #{display_data.get('bet_in_cycle', '?')} in cycle")
         print(f"Selection: {display_data.get('team_name', 'Unknown')} @ {display_data.get('odds', 0.0)}")
         print(f"Selection ID: {display_data.get('selection_id')}")
-        print(f"Stake: £{display_data.get('stake', 0.0):.2f}")
+        print(f"Stake: Â£{display_data.get('stake', 0.0):.2f}")
         
         # Market start time
         market_start_time = display_data.get('market_start_time')
@@ -230,7 +231,7 @@ class CommandHandler:
                     
                     # Mark our selection
                     is_our_selection = selection_id == display_data.get('selection_id')
-                    selection_marker = " ← OUR BET" if is_our_selection else ""
+                    selection_marker = " â OUR BET" if is_our_selection else ""
                     
                     print(f"  {team_name}: {current_odds}{selection_marker}")
         
@@ -278,35 +279,35 @@ class CommandHandler:
             won = bet.get('won', False)
             if won:
                 total_won += 1
-                result_marker = "✓ WON"
+                result_marker = "â WON"
                 stake = bet.get('stake', 0.0)
                 gross_profit = bet.get('gross_profit', 0.0)
                 commission = bet.get('commission', 0.0)
                 profit = bet.get('profit', 0.0)
                 total_commission += commission
-                profit_display = f"+£{profit:.2f} (Commission: £{commission:.2f})"
+                profit_display = f"+Â£{profit:.2f} (Commission: Â£{commission:.2f})"
             else:
                 total_lost += 1
-                result_marker = "✗ LOST"
+                result_marker = "â LOST"
                 stake = bet.get('stake', 0.0)
-                profit_display = f"-£{stake:.2f}"
+                profit_display = f"-Â£{stake:.2f}"
             
             print(f"\n{formatted_time} - {result_marker} - {profit_display}")
             print(f"Event: {bet.get('event_name', 'Unknown Event')}")
             print(f"Selection: {bet.get('team_name', 'Unknown')} (ID: {bet.get('selection_id', 'Unknown')}) @ {bet.get('odds', 0.0)}")
-            print(f"Stake: £{bet.get('stake', 0.0):.2f}")
+            print(f"Stake: Â£{bet.get('stake', 0.0):.2f}")
             
             if won:
-                print(f"Gross Profit: £{gross_profit:.2f}")
-                print(f"Commission (5%): £{commission:.2f}")
-                print(f"Net Profit: £{profit:.2f}")
+                print(f"Gross Profit: Â£{gross_profit:.2f}")
+                print(f"Commission (5%): Â£{commission:.2f}")
+                print(f"Net Profit: Â£{profit:.2f}")
         
         # Show summary
         win_rate = (total_won / len(bets)) * 100 if bets else 0
         print("\nSummary:")
         print(f"Won: {total_won}, Lost: {total_lost}")
         print(f"Win Rate: {win_rate:.1f}%")
-        print(f"Total Commission Paid: £{total_commission:.2f}")
+        print(f"Total Commission Paid: Â£{total_commission:.2f}")
         print("="*75 + "\n")
     
     async def cmd_odds(self, *args) -> None:
@@ -353,10 +354,10 @@ class CommandHandler:
             try:
                 initial_stake = float(args[0])
             except ValueError:
-                print(f"Invalid stake amount: {args[0]}. Using configured default: £{configured_stake}")
+                print(f"Invalid stake amount: {args[0]}. Using configured default: Â£{configured_stake}")
         
         # Ask for confirmation
-        print(f"\nAre you sure you want to reset the betting system with initial stake: £{initial_stake}?")
+        print(f"\nAre you sure you want to reset the betting system with initial stake: Â£{initial_stake}?")
         print("This will clear all bet history and reset the account balance.")
         print("Type 'yes' to confirm or anything else to cancel.")
         
@@ -365,7 +366,7 @@ class CommandHandler:
             print("Reset cancelled.")
             return
         
-        print(f"Resetting betting system with initial stake: £{initial_stake}...")
+        print(f"Resetting betting system with initial stake: Â£{initial_stake}...")
         
         # Update configuration if stake changed
         if initial_stake != configured_stake:
@@ -449,8 +450,18 @@ async def update_enhanced_bet_data(betting_system, data_dir: str = 'web/data/bet
                         with open(active_bet_file, 'r') as f:
                             active_bet = json.load(f)
                         
-                        # Check if it's a valid bet
-                        if active_bet and isinstance(active_bet, dict) and 'market_id' in active_bet:
+                        # First check for explicit cancellation flag
+                        if active_bet and isinstance(active_bet, dict) and active_bet.get('is_canceled', False):
+                            logger.debug(f"Skipping enhancement for explicitly canceled bet (canceled at {active_bet.get('canceled_at')})")
+                            await asyncio.sleep(interval)
+                            continue
+                        
+                        # Then check if it's a valid active bet with all required fields
+                        if (active_bet and isinstance(active_bet, dict) and 
+                            'market_id' in active_bet and 
+                            'selection_id' in active_bet and 
+                            'stake' in active_bet):
+                            
                             market_id = active_bet['market_id']
                             logger.info(f"Enhancing active bet with market ID: {market_id}")
                             
