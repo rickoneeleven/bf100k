@@ -2,12 +2,14 @@
 log_manager.py
 
 Improved log management with proper rotation and truncation.
+Enhanced to ensure debug messages appear in console.
 """
 
 import os
 import logging
 import glob
 import shutil
+import sys
 from datetime import datetime, timedelta
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
@@ -21,7 +23,7 @@ class LogManager:
     def setup_logger(
         name: str, 
         log_file: str, 
-        level=logging.INFO, 
+        level=logging.DEBUG,  # Changed default to DEBUG 
         retention_days: int = 3,
         max_size_mb: int = 5
     ) -> logging.Logger:
@@ -75,6 +77,7 @@ class LogManager:
         
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         handler.setFormatter(formatter)
+        handler.setLevel(level)
         logger.addHandler(handler)
         
         return logger
@@ -169,18 +172,20 @@ class LogManager:
             root_logger = LogManager.setup_logger(
                 'root', 
                 os.path.join(log_dir, 'system.log'),
-                level=logging.INFO,
+                level=logging.DEBUG,  # Changed to DEBUG
                 retention_days=retention_days
             )
             
             # Add console output for development
-            console = logging.StreamHandler()
-            console.setLevel(logging.INFO)
+            console = logging.StreamHandler(sys.stdout)  # Explicitly use stdout
+            console.setLevel(logging.DEBUG)  # Changed to DEBUG
             formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
             console.setFormatter(formatter)
             root_logger.addHandler(console)
             
-            root_logger.info(f"Logging initialized with {retention_days} day retention")
+            # Log to confirm
+            root_logger.debug("Logging initialized with DEBUG level")
+            print("Logging initialized with DEBUG level to console and file")
             
         except Exception as e:
             print(f"Error initializing logging: {e}")

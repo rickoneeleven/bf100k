@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 import logging
 import asyncio
+import sys
 
 from ..repositories.bet_repository import BetRepository
 from ..repositories.account_repository import AccountRepository
@@ -45,12 +46,26 @@ class MarketAnalysisCommand:
         # Use provided betting ledger or create a new one if none was provided
         self.betting_ledger = betting_ledger if betting_ledger else BettingLedger()
         
+        # Set up console logging for debugging
         self.logger = logging.getLogger('MarketAnalysisCommand')
-        self.logger.setLevel(logging.INFO)
-        handler = logging.FileHandler('web/logs/commands.log')
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        handler.setFormatter(formatter)
-        self.logger.addHandler(handler)
+        self.logger.setLevel(logging.DEBUG)  # Set to DEBUG level
+        
+        # File handler
+        file_handler = logging.FileHandler('web/logs/commands.log')
+        file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(file_formatter)
+        file_handler.setLevel(logging.DEBUG)
+        self.logger.addHandler(file_handler)
+        
+        # Console handler for immediate visibility
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        console_handler.setFormatter(console_formatter)
+        console_handler.setLevel(logging.DEBUG)
+        self.logger.addHandler(console_handler)
+        
+        # Log initialization to confirm
+        self.logger.debug("Market Analysis Command initialized with DEBUG logging")
 
     def validate_market_criteria(
         self,
@@ -138,7 +153,8 @@ class MarketAnalysisCommand:
             Betting opportunity if found, None otherwise
         """
         try:
-            self.logger.info(f"Analyzing market {market_id} - {event_name} with fresh data")
+            print(f"\n===== ANALYZING MARKET: {market_id} - {event_name} =====")
+            self.logger.debug(f"Analyzing market {market_id} - {event_name} with fresh data")
             
             # Get fresh market data directly with consistent approach
             market_data = await self.betfair_client.get_fresh_market_data(market_id, price_depth=3)
@@ -149,11 +165,11 @@ class MarketAnalysisCommand:
             
             # Get total matched amount for visibility and filtering
             total_matched = market_data.get('totalMatched', 0)
-            self.logger.info(f"Market {market_id} has total matched volume: £{total_matched}")
+            self.logger.debug(f"Market {market_id} total matched volume: £{total_matched}")
             
             # Check if total matched is at least 100k
             if total_matched < 100000:
-                self.logger.info(f"Skipping market with insufficient liquidity: £{total_matched} < £100,000")
+                self.logger.debug(f"Skipping market with insufficient liquidity: £{total_matched} < £100,000")
                 return None
                 
             # Get event details
@@ -166,6 +182,13 @@ class MarketAnalysisCommand:
             # Ensure runners are sorted by sortPriority for consistent processing
             runners = sorted(runners, key=lambda r: r.get('sortPriority', 999))
             
+            # Log raw runners for debugging
+            self.logger.debug(f"Raw runners by priority:")
+            for i, runner in enumerate(runners):
+                self.logger.debug(f"  {i+1}. ID: {runner.get('selectionId')}, "
+                                f"Priority: {runner.get('sortPriority')}, "
+                                f"Name: {runner.get('runnerName', 'Unknown')}")
+            
             # Use the selection mapper to derive accurate team mappings
             runners = await self.selection_mapper.derive_teams_from_event(
                 event_id=event_id,
@@ -173,15 +196,12 @@ class MarketAnalysisCommand:
                 runners=runners
             )
             
-            # Log detailed market information
-            await self._log_market_details(market_id, event_name, runners)
-            
             # Get the correct stake amount from the event-sourced betting ledger
             stake_amount = await self.betting_ledger.get_next_stake()
             
-            self.logger.info(f"Using stake amount: £{stake_amount} for next bet (compound strategy)")
+            self.logger.debug(f"Using stake amount: £{stake_amount} for next bet (compound strategy)")
             
-            # Create a simple list of selections with odds and availability
+            # Create a list of selections with odds and availability
             selections = []
             for runner in runners:
                 # Get odds and liquidity
@@ -204,39 +224,55 @@ class MarketAnalysisCommand:
             
             # If we have fewer than 2 selections, skip this market
             if len(selections) < 2:
-                self.logger.info(f"Not enough selections with prices in market (found {len(selections)})")
+                self.logger.debug(f"Not enough selections with prices in market (found {len(selections)})")
                 return None
             
-            # Sort selections by odds (lowest first - favorite has lowest odds)
-            selections.sort(key=lambda x: x['odds'])
+            # Print all selections for debugging
+            print("\n--- ALL SELECTIONS ---")
+            for i, sel in enumerate(selections):
+                print(f"  {i+1}. {sel['team_name']} @ {sel['odds']} (ID: {sel['selection_id']})")
             
-            # Log the sorted selections
-            self.logger.info("Selections ordered by odds (favorite first):")
-            for i, selection in enumerate(selections):
-                self.logger.info(f"  {i+1}. {selection['team_name']} @ {selection['odds']}")
+            # FIXED SELECTION LOGIC:
+            # Step 1: First identify the top 2 favorites by sorting by odds (lowest first)
+            selections_by_odds = sorted(selections, key=lambda x: x['odds'])
+            top_2_favorites = selections_by_odds[:2]
             
-            # We only consider the top 2 favorites
-            top_2_selections = selections[:2]
+            # Log the top 2 favorites for visibility
+            print("\n--- TOP 2 FAVORITES (BY LOWEST ODDS) ---")
+            for i, selection in enumerate(top_2_favorites):
+                print(f"  {i+1}. {selection['team_name']} @ {selection['odds']} (ID: {selection['selection_id']})")
             
-            # Filter for selections that meet our minimum odds requirement (>= 3.5)
-            valid_selections = [s for s in top_2_selections if s['odds'] >= 3.5]
+            # Step 2: Filter the top 2 favorites to only include those with odds >= 3.5
+            valid_selections = [s for s in top_2_favorites if s['odds'] >= 3.5]
+            
+            # Log valid selections
+            print("\n--- VALID SELECTIONS (TOP 2 FAVORITES WITH ODDS >= 3.5) ---")
+            if valid_selections:
+                for i, sel in enumerate(valid_selections):
+                    print(f"  {i+1}. {sel['team_name']} @ {sel['odds']} (ID: {sel['selection_id']})")
+            else:
+                print("  No valid selections found - no top 2 favorite has odds >= 3.5")
             
             # If no valid selections, skip this market
             if not valid_selections:
-                self.logger.info("No selections meet our criteria (must be top 2 AND odds >= 3.5)")
+                self.logger.info("No selections meet our criteria (must be top 2 favorite AND odds >= 3.5)")
                 return None
             
-            # Take the selection with highest odds among valid ones
+            # Step 3: Sort valid selections by odds (highest first) for best value
             valid_selections.sort(key=lambda x: x['odds'], reverse=True)
             best_selection = valid_selections[0]
             
             # Log the selected opportunity
+            print(f"\n--- FINAL SELECTION ---")
+            print(f"  Selected: {best_selection['team_name']} @ {best_selection['odds']} (ID: {best_selection['selection_id']})")
+            print(f"  This is a top 2 favorite with odds >= 3.5")
+            
             self.logger.info(
                 f"Selected opportunity: {best_selection['team_name']} @ {best_selection['odds']} "
-                f"(Rank: {selections.index(best_selection)+1} of {len(selections)})"
+                f"(is a top 2 favorite with odds >= 3.5)"
             )
             
-            # Check liquidity
+            # Check liquidity requirement
             meets_criteria, reason = self.validate_market_criteria(
                 best_selection['odds'],
                 best_selection['available_volume'],
@@ -329,10 +365,8 @@ class MarketAnalysisCommand:
                 "stake": stake,
                 "available_volume": available_volume,
                 "market_start_time": market_start_time,
-                # Add market status - NEW
                 "inplay": market.get('inplay', False),
                 "market_status": market.get('status', 'UNKNOWN'),
-                # Add cycle info from event-sourced state
                 "cycle_number": cycle_info["current_cycle"],
                 "bet_in_cycle": cycle_info["current_bet_in_cycle"] + 1,
                 "timestamp": datetime.now(timezone.utc).isoformat()
@@ -400,17 +434,6 @@ class MarketAnalysisCommand:
                 f"Analyzing {len(top_markets_list)} top markets by traded volume out of {len(markets)} total markets "
                 f"for the next {hours_ahead} hours, including in-play markets"
             )
-            
-            # Log the top markets for visibility
-            for idx, market in enumerate(top_markets_list):
-                event_name = market.get('event', {}).get('name', 'Unknown')
-                total_matched = market.get('totalMatched', 0)
-                start_time = self._format_market_time(market.get('marketStartTime', ''))
-                
-                self.logger.info(
-                    f"Top Market #{idx+1}: {event_name}, "
-                    f"Total Matched: £{total_matched}, Start: {start_time}"
-                )
             
             # Process each top market individually with fresh data
             for market in top_markets_list:
