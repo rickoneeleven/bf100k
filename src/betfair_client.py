@@ -118,9 +118,12 @@ class BetfairClient:
             today = now.strftime('%Y-%m-%dT%H:%M:%SZ')
             future_time = future.strftime('%Y-%m-%dT%H:%M:%SZ')
             
-            self.logger.info(f"Searching for football markets from {today} to {future_time} (next {hours_ahead} hours), including in-play markets")
+            self.logger.info(f"Searching for football markets (both upcoming and in-play)")
             
-            payload = {
+            all_markets = []
+            
+            # Get upcoming markets (not yet started)
+            upcoming_payload = {
                 'jsonrpc': '2.0',
                 'method': 'SportsAPING/v1.0/listMarketCatalogue',
                 'params': {
@@ -130,10 +133,9 @@ class BetfairClient:
                         'marketStartTime': {
                             'from': today,
                             'to': future_time
-                        },
-                        # Remove any filters for in-play status to include all markets
+                        }
                     },
-                    'maxResults': max_results,
+                    'maxResults': max_results // 2,  # Half for upcoming markets
                     'marketProjection': [
                         'EVENT',
                         'COMPETITION',
@@ -151,20 +153,69 @@ class BetfairClient:
                 'content-type': 'application/json'
             }
             
-            async with session.post(self.betting_url, json=payload, headers=headers) as resp:
+            # First get upcoming markets
+            async with session.post(self.betting_url, json=upcoming_payload, headers=headers) as resp:
                 if resp.status == 200:
                     resp_json = await resp.json()
                     if 'result' in resp_json:
-                        markets_found = len(resp_json['result'])
-                        self.logger.info(f"Found {markets_found} football markets (includes in-play) in the next {hours_ahead} hours")
-                        return resp_json['result']
+                        upcoming_markets = resp_json['result']
+                        all_markets.extend(upcoming_markets)
+                        self.logger.info(f"Found {len(upcoming_markets)} upcoming football markets in the next {hours_ahead} hours")
                     else:
                         self.logger.error(f'Error in response: {resp_json.get("error")}')
-                        return None
                 else:
                     self.logger.error(f'Request failed with status code: {resp.status}')
-                    return None
-                    
+            
+            # Now get in-play markets separately
+            inplay_payload = {
+                'jsonrpc': '2.0',
+                'method': 'SportsAPING/v1.0/listMarketCatalogue',
+                'params': {
+                    'filter': {
+                        'eventTypeIds': ['1'],  # 1 is Football
+                        'marketTypeCodes': ['MATCH_ODDS'],
+                        'inPlayOnly': True
+                    },
+                    'maxResults': max_results // 2,  # Half for in-play markets
+                    'marketProjection': [
+                        'EVENT',
+                        'COMPETITION',
+                        'MARKET_START_TIME',
+                        'RUNNER_DESCRIPTION'
+                    ],
+                    'sort': 'MAXIMUM_TRADED'  # Sort by traded volume to get most liquid markets first
+                },
+                'id': 1
+            }
+            
+            # Get in-play markets
+            async with session.post(self.betting_url, json=inplay_payload, headers=headers) as resp:
+                if resp.status == 200:
+                    resp_json = await resp.json()
+                    if 'result' in resp_json:
+                        inplay_markets = resp_json['result']
+                        all_markets.extend(inplay_markets)
+                        self.logger.info(f"Found {len(inplay_markets)} in-play football markets")
+                    else:
+                        self.logger.error(f'Error in response: {resp_json.get("error")}')
+                else:
+                    self.logger.error(f'Request failed with status code: {resp.status}')
+            
+            # Sort all markets by traded volume (descending)
+            all_markets.sort(key=lambda x: x.get('totalMatched', 0), reverse=True)
+            
+            # Limit to the requested number of markets
+            all_markets = all_markets[:max_results]
+            
+            markets_found = len(all_markets)
+            in_play_count = sum(1 for m in all_markets if m.get('inPlayAvailable', False))
+            upcoming_count = markets_found - in_play_count
+            
+            self.logger.info(f"Returning a total of {markets_found} football markets "
+                            f"({in_play_count} in-play, {upcoming_count} upcoming)")
+            
+            return all_markets
+            
         except Exception as e:
             self.logger.error(f'Exception during get_football_markets: {str(e)}')
             return None
