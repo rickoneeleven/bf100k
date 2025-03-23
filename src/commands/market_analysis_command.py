@@ -151,7 +151,7 @@ class MarketAnalysisCommand:
             total_matched = market_data.get('totalMatched', 0)
             self.logger.info(f"Market {market_id} has total matched volume: £{total_matched}")
             
-            # NEW: Check if total matched is at least 100k
+            # Check if total matched is at least 100k
             if total_matched < 100000:
                 self.logger.info(f"Skipping market with insufficient liquidity: £{total_matched} < £100,000")
                 return None
@@ -181,76 +181,91 @@ class MarketAnalysisCommand:
             
             self.logger.info(f"Using stake amount: £{stake_amount} for next bet (compound strategy)")
             
-            # Find the Draw selection
-            draw_runner = None
-            
+            # Create a simple list of selections with odds and availability
+            selections = []
             for runner in runners:
-                selection_id = str(runner.get('selectionId', ''))
-                team_name = runner.get('teamName', 'Unknown')
+                # Get odds and liquidity
+                ex_data = runner.get('ex', {})
+                back_prices = ex_data.get('availableToBack', [])
                 
-                # Match the logic from selection_mapper.py's derive_teams_from_event method
-                if selection_id == self.selection_mapper.KNOWN_DRAW_SELECTION_ID or team_name.lower() in self.selection_mapper.DRAW_VARIANTS:
-                    draw_runner = runner
-                    break
-            
-            # If no Draw selection found, skip market
-            if not draw_runner:
-                self.logger.info(f"No Draw selection found in market {market_id}")
-                return None
+                # Skip runners with no available prices
+                if not back_prices or 'price' not in back_prices[0]:
+                    continue
                 
-            # Get Draw odds
-            draw_ex = draw_runner.get('ex', {})
-            draw_available_to_back = draw_ex.get('availableToBack', [{}])[0]
+                # Extract info
+                selection = {
+                    'runner': runner,
+                    'team_name': runner.get('teamName', 'Unknown'),
+                    'selection_id': runner.get('selectionId'),
+                    'odds': back_prices[0]['price'],
+                    'available_volume': back_prices[0]['size']
+                }
+                selections.append(selection)
             
-            if not draw_available_to_back:
-                self.logger.info("No back prices available for Draw")
-                return None
-                
-            draw_odds = draw_available_to_back.get('price', 0)
-            draw_available_size = draw_available_to_back.get('size', 0)
-            
-            self.logger.info(f"Draw odds: {draw_odds}, Available volume: £{draw_available_size}")
-            
-            # NEW: Check if Draw odds are at least 3.5
-            if draw_odds < 3.5:
-                self.logger.info(f"Draw odds too low: {draw_odds} < 3.5")
+            # If we have fewer than 2 selections, skip this market
+            if len(selections) < 2:
+                self.logger.info(f"Not enough selections with prices in market (found {len(selections)})")
                 return None
             
-            # Check liquidity criteria for the Draw
+            # Sort selections by odds (lowest first - favorite has lowest odds)
+            selections.sort(key=lambda x: x['odds'])
+            
+            # Log the sorted selections
+            self.logger.info("Selections ordered by odds (favorite first):")
+            for i, selection in enumerate(selections):
+                self.logger.info(f"  {i+1}. {selection['team_name']} @ {selection['odds']}")
+            
+            # We only consider the top 2 favorites
+            top_2_selections = selections[:2]
+            
+            # Filter for selections that meet our minimum odds requirement (>= 3.5)
+            valid_selections = [s for s in top_2_selections if s['odds'] >= 3.5]
+            
+            # If no valid selections, skip this market
+            if not valid_selections:
+                self.logger.info("No selections meet our criteria (must be top 2 AND odds >= 3.5)")
+                return None
+            
+            # Take the selection with highest odds among valid ones
+            valid_selections.sort(key=lambda x: x['odds'], reverse=True)
+            best_selection = valid_selections[0]
+            
+            # Log the selected opportunity
+            self.logger.info(
+                f"Selected opportunity: {best_selection['team_name']} @ {best_selection['odds']} "
+                f"(Rank: {selections.index(best_selection)+1} of {len(selections)})"
+            )
+            
+            # Check liquidity
             meets_criteria, reason = self.validate_market_criteria(
-                draw_odds,
-                draw_available_size,
+                best_selection['odds'],
+                best_selection['available_volume'],
                 stake_amount,
                 request
             )
             
             if meets_criteria:
                 self.logger.info(
-                    f"Found betting opportunity on Draw: {event_name}, "
-                    f"Odds: {draw_odds}, "
-                    f"Selection ID: {draw_runner.get('selectionId')}, "
+                    f"Found betting opportunity: {event_name}, "
+                    f"Selection: {best_selection['team_name']}, "
+                    f"Odds: {best_selection['odds']}, "
                     f"Stake: £{stake_amount}, "
-                    f"Liquidity: £{draw_available_size}, "
-                    f"Market Status: {'In-Play' if market_data.get('inplay') else 'Not Started'}"
+                    f"Liquidity: £{best_selection['available_volume']}"
                 )
                 
                 return await self._create_betting_opportunity(
                     market_id=market_id,
                     event_id=event_id,
                     market=market_data,
-                    runner=draw_runner,
-                    odds=draw_odds,
+                    runner=best_selection['runner'],
+                    odds=best_selection['odds'],
                     stake=stake_amount,
-                    available_volume=draw_available_size
+                    available_volume=best_selection['available_volume']
                 )
             else:
-                self.logger.info(
-                    f"Draw doesn't meet criteria: {reason}"
-                )
-            
-            # No suitable selections found in this market
-            return None
-            
+                self.logger.info(f"Selection doesn't meet liquidity criteria: {reason}")
+                return None
+                
         except Exception as e:
             self.logger.error(f"Error analyzing individual market: {str(e)}")
             self.logger.exception(e)
