@@ -2,7 +2,7 @@
 market_analysis_command.py
 
 Command pattern implementation for market analysis operations, refactored to work with event-sourced approach.
-Handles validation and analysis of betting markets according to strategy criteria.
+Handles validation and analysis of betting markets according to updated strategy criteria.
 """
 
 from dataclasses import dataclass
@@ -147,11 +147,14 @@ class MarketAnalysisCommand:
                 self.logger.error(f"Failed to get market data for {market_id}")
                 return None
             
-            # Get total matched amount for visibility
+            # Get total matched amount for visibility and filtering
             total_matched = market_data.get('totalMatched', 0)
             self.logger.info(f"Market {market_id} has total matched volume: £{total_matched}")
-                
-            # We're no longer skipping in-play markets
+            
+            # NEW: Check if total matched is at least 100k
+            if total_matched < 100000:
+                self.logger.info(f"Skipping market with insufficient liquidity: £{total_matched} < £100,000")
+                return None
                 
             # Get event details
             event = market_data.get('event', {})
@@ -178,9 +181,8 @@ class MarketAnalysisCommand:
             
             self.logger.info(f"Using stake amount: £{stake_amount} for next bet (compound strategy)")
             
-            # Find the Draw selection and team runners
+            # Find the Draw selection
             draw_runner = None
-            team_runners = []
             
             for runner in runners:
                 selection_id = str(runner.get('selectionId', ''))
@@ -189,16 +191,11 @@ class MarketAnalysisCommand:
                 # Match the logic from selection_mapper.py's derive_teams_from_event method
                 if selection_id == self.selection_mapper.KNOWN_DRAW_SELECTION_ID or team_name.lower() in self.selection_mapper.DRAW_VARIANTS:
                     draw_runner = runner
-                else:
-                    team_runners.append(runner)
+                    break
             
             # If no Draw selection found, skip market
             if not draw_runner:
                 self.logger.info(f"No Draw selection found in market {market_id}")
-                return None
-                
-            if len(team_runners) < 2:
-                self.logger.info(f"Not enough team runners found in market {market_id}")
                 return None
                 
             # Get Draw odds
@@ -214,24 +211,9 @@ class MarketAnalysisCommand:
             
             self.logger.info(f"Draw odds: {draw_odds}, Available volume: £{draw_available_size}")
             
-            # Get odds for both teams
-            team_odds = []
-            for team_runner in team_runners:
-                team_ex = team_runner.get('ex', {})
-                team_available_to_back = team_ex.get('availableToBack', [{}])[0]
-                
-                if team_available_to_back:
-                    odds = team_available_to_back.get('price', 0)
-                    team_odds.append(odds)
-                    self.logger.info(f"Team {team_runner.get('teamName')}: odds {odds}")
-            
-            # Check if Draw odds are higher than both team odds
-            is_draw_odds_highest = len(team_odds) >= 2 and all(draw_odds > team_odd for team_odd in team_odds)
-            
-            if not is_draw_odds_highest:
-                self.logger.info(
-                    f"Draw odds ({draw_odds}) not higher than both teams odds: {team_odds}"
-                )
+            # NEW: Check if Draw odds are at least 3.5
+            if draw_odds < 3.5:
+                self.logger.info(f"Draw odds too low: {draw_odds} < 3.5")
                 return None
             
             # Check liquidity criteria for the Draw
@@ -248,7 +230,8 @@ class MarketAnalysisCommand:
                     f"Odds: {draw_odds}, "
                     f"Selection ID: {draw_runner.get('selectionId')}, "
                     f"Stake: £{stake_amount}, "
-                    f"Liquidity: £{draw_available_size}"
+                    f"Liquidity: £{draw_available_size}, "
+                    f"Market Status: {'In-Play' if market_data.get('inplay') else 'Not Started'}"
                 )
                 
                 return await self._create_betting_opportunity(
@@ -331,6 +314,9 @@ class MarketAnalysisCommand:
                 "stake": stake,
                 "available_volume": available_volume,
                 "market_start_time": market_start_time,
+                # Add market status - NEW
+                "inplay": market.get('inplay', False),
+                "market_status": market.get('status', 'UNKNOWN'),
                 # Add cycle info from event-sourced state
                 "cycle_number": cycle_info["current_cycle"],
                 "bet_in_cycle": cycle_info["current_bet_in_cycle"] + 1,
@@ -342,7 +328,8 @@ class MarketAnalysisCommand:
                 f"Created betting opportunity: Market: {market_id}, Event: {event_name}, "
                 f"Selection: {team_name} (ID: {selection_id}, Priority: {sort_priority}), "
                 f"Odds: {odds}, Stake: £{stake}, "
-                f"Cycle: {cycle_info['current_cycle']}, Bet: {cycle_info['current_bet_in_cycle'] + 1}"
+                f"Cycle: {cycle_info['current_cycle']}, Bet: {cycle_info['current_bet_in_cycle'] + 1}, "
+                f"In-Play: {market.get('inplay', False)}"
             )
             
             return opportunity
@@ -383,7 +370,7 @@ class MarketAnalysisCommand:
             hours_ahead = market_config.get('hours_ahead', 4)
             top_markets = market_config.get('top_markets', 10)
             
-            # Get a large set of football markets data with extended time window
+            # Get football markets for the next 4 hours AND active in-play markets
             markets = await self.betfair_client.get_football_markets(request.max_markets, hours_ahead)
             
             if not markets:
@@ -396,7 +383,7 @@ class MarketAnalysisCommand:
             
             self.logger.info(
                 f"Analyzing {len(top_markets_list)} top markets by traded volume out of {len(markets)} total markets "
-                f"for the next {hours_ahead} hours"
+                f"for the next {hours_ahead} hours, including in-play markets"
             )
             
             # Log the top markets for visibility
@@ -451,7 +438,7 @@ class MarketAnalysisCommand:
             betting_config = config.get('betting', {})
             market_config = config.get('market_selection', {})
             
-            # Create request with configuration (removed min/max odds)
+            # Create request with configuration
             request = MarketAnalysisRequest(
                 liquidity_factor=betting_config.get('liquidity_factor', 1.1),
                 max_markets=market_config.get('max_markets', 10),

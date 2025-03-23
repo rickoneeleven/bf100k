@@ -23,6 +23,8 @@ class ConfigManager:
             "initial_stake": 1.0,
             "target_amount": 50000.0,
             "liquidity_factor": 1.1,
+            "min_odds": 3.5,         # Minimum odds to consider for any selection
+            "min_liquidity": 100000  # Minimum matched amount on market (£100k)
         },
         "market_selection": {
             "max_markets": 1000,  # Total markets to fetch
@@ -30,7 +32,8 @@ class ConfigManager:
             "hours_ahead": 4,     # Hours ahead to search for markets
             "sport_id": "1",
             "market_type": "MATCH_ODDS",
-            "polling_interval_seconds": 60
+            "polling_interval_seconds": 60,
+            "include_inplay": True  # Include in-play markets in search
         },
         "result_checking": {
             "check_interval_minutes": 5,

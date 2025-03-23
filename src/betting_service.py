@@ -42,6 +42,7 @@ class BettingService:
     async def scan_markets(self) -> Optional[Dict]:
         """
         Scan available markets for betting opportunities with focus on high-liquidity markets.
+        Updated to consider any selection (home, away, draw) with odds of 3.5+.
         
         Returns:
             Dict containing betting opportunity if found, None otherwise
@@ -68,7 +69,7 @@ class BettingService:
                 f"Next stake: £{next_stake:.2f}"
             )
             
-            # Get football markets for the next 4 hours
+            # Get football markets for the next 4 hours including in-play
             market_config = self.config.get('market_selection', {})
             max_markets = market_config.get('max_markets', 1000)  # Request a large number of markets
             hours_ahead = market_config.get('hours_ahead', 4)     # Look 4 hours ahead
@@ -113,7 +114,11 @@ class BettingService:
                     self.logger.warning(f"Could not get data for market {market_id}")
                     continue
                 
-                # We're no longer skipping in-play markets
+                # NEW: Check if market has at least 100k matched volume
+                total_matched = market_data.get('totalMatched', 0)
+                if total_matched < 100000:
+                    self.logger.info(f"Skipping market with insufficient liquidity: £{total_matched} < £100,000")
+                    continue
                 
                 # Get event details
                 event_id = event.get('id', 'Unknown')
@@ -124,76 +129,76 @@ class BettingService:
                 # Sort runners by sortPriority
                 runners = sorted(runners, key=lambda r: r.get('sortPriority', 999))
                 
-                # Find the Draw selection (usually has ID 58805 or team name "Draw")
-                draw_runner = None
+                # Check all selections for opportunities and store valid ones
+                valid_opportunities = []
+                
                 for runner in runners:
-                    selection_id = str(runner.get('selectionId', ''))
-                    team_name = runner.get('teamName', '').lower()
+                    selection_id = runner.get('selectionId')
+                    team_name = runner.get('teamName', 'Unknown')
                     
-                    if selection_id == '58805' or team_name == 'draw' or team_name == 'the draw':
-                        draw_runner = runner
-                        break
+                    runner_ex = runner.get('ex', {})
+                    available_to_back = runner_ex.get('availableToBack', [])
+                    
+                    if not available_to_back:
+                        self.logger.debug(f"No back prices available for {team_name}")
+                        continue
+                    
+                    # Get best back price and size
+                    back_price = available_to_back[0].get('price', 0)
+                    available_size = available_to_back[0].get('size', 0)
+                    
+                    self.logger.debug(f"Selection {team_name}: Odds: {back_price}, Available volume: £{available_size}")
+                    
+                    # Check if odds are at least 3.5
+                    if back_price < 3.5:
+                        self.logger.debug(f"Odds too low for {team_name}: {back_price} < 3.5")
+                        continue
+                    
+                    # Check liquidity requirement
+                    if available_size < next_stake * liquidity_factor:
+                        self.logger.debug(
+                            f"Insufficient liquidity for {team_name}: {available_size} < "
+                            f"{next_stake * liquidity_factor} (stake * factor)"
+                        )
+                        continue
+                    
+                    # This is a valid opportunity
+                    valid_opportunities.append({
+                        'runner': runner,
+                        'odds': back_price,
+                        'available_volume': available_size,
+                        'team_name': team_name
+                    })
                 
-                if not draw_runner:
-                    self.logger.debug(f"No Draw selection found in market {market_id}")
-                    continue
-                
-                # Get Draw odds
-                draw_ex = draw_runner.get('ex', {})
-                draw_available_to_back = draw_ex.get('availableToBack', [{}])[0]
-                
-                if not draw_available_to_back:
-                    self.logger.debug("No back prices available for Draw")
-                    continue
-                
-                draw_odds = draw_available_to_back.get('price', 0)
-                draw_available_size = draw_available_to_back.get('size', 0)
-                
-                # Check liquidity against the stake plus liquidity factor
-                if draw_available_size < next_stake * liquidity_factor:
-                    self.logger.debug(
-                        f"Insufficient liquidity: {draw_available_size} < "
-                        f"{next_stake * liquidity_factor} (stake * factor)"
+                # If we have valid opportunities, choose the one with highest odds
+                if valid_opportunities:
+                    # Sort by odds (highest first)
+                    valid_opportunities.sort(key=lambda x: x['odds'], reverse=True)
+                    best_opportunity = valid_opportunities[0]
+                    
+                    self.logger.info(
+                        f"Found betting opportunity: {event_name}, "
+                        f"{best_opportunity['team_name']} @ {best_opportunity['odds']}, "
+                        f"Available: £{best_opportunity['available_volume']}"
                     )
-                    continue
+                    
+                    # Create bet details
+                    bet_details = {
+                        "market_id": market_id,
+                        "event_id": event_id,
+                        "event_name": event_name,
+                        "selection_id": best_opportunity['runner'].get('selectionId'),
+                        "team_name": best_opportunity['team_name'],
+                        "competition": market_data.get('competition', {}).get('name', 'Unknown'),
+                        "odds": best_opportunity['odds'],
+                        "stake": next_stake,
+                        "available_volume": best_opportunity['available_volume'],
+                        "market_start_time": market_data.get('marketStartTime'),
+                        "inplay": market_data.get('inplay', False)
+                    }
+                    
+                    return bet_details
                 
-                # Get odds for both teams to check if Draw odds are higher
-                team_runners = [r for r in runners if r != draw_runner]
-                team_odds = []
-                
-                for team_runner in team_runners:
-                    team_ex = team_runner.get('ex', {})
-                    team_available_to_back = team_ex.get('availableToBack', [{}])[0]
-                    if team_available_to_back:
-                        team_odds.append(team_available_to_back.get('price', 0))
-                
-                # Check if Draw odds are higher than both team odds
-                if len(team_odds) >= 2 and not all(draw_odds > team_odd for team_odd in team_odds):
-                    self.logger.debug(f"Draw odds {draw_odds} not higher than both team odds {team_odds}")
-                    continue
-                
-                # Found a betting opportunity
-                self.logger.info(
-                    f"Found betting opportunity: {event_name}, "
-                    f"Draw @ {draw_odds}, Available: £{draw_available_size}"
-                )
-                
-                # Create bet details
-                bet_details = {
-                    "market_id": market_id,
-                    "event_id": event_id,
-                    "event_name": event_name,
-                    "selection_id": draw_runner.get('selectionId'),
-                    "team_name": "Draw",
-                    "competition": market_data.get('competition', {}).get('name', 'Unknown'),
-                    "odds": draw_odds,
-                    "stake": next_stake,
-                    "available_volume": draw_available_size,
-                    "market_start_time": market_data.get('marketStartTime')
-                }
-                
-                return bet_details
-            
             # No suitable markets found
             self.logger.info("No suitable betting opportunities found in the top markets")
             return None

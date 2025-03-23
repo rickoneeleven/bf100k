@@ -95,7 +95,7 @@ class BetfairClient:
 
     async def get_football_markets(self, max_results: int = 1000, hours_ahead: int = 4) -> Optional[List[Dict]]:
         """
-        Get football Match Odds markets, sorted by matched volume
+        Get football Match Odds markets, including in-play markets, sorted by matched volume
         
         Args:
             max_results: Maximum number of markets to return
@@ -118,7 +118,7 @@ class BetfairClient:
             today = now.strftime('%Y-%m-%dT%H:%M:%SZ')
             future_time = future.strftime('%Y-%m-%dT%H:%M:%SZ')
             
-            self.logger.info(f"Searching for football markets from {today} to {future_time} (next {hours_ahead} hours)")
+            self.logger.info(f"Searching for football markets from {today} to {future_time} (next {hours_ahead} hours), including in-play markets")
             
             payload = {
                 'jsonrpc': '2.0',
@@ -130,7 +130,8 @@ class BetfairClient:
                         'marketStartTime': {
                             'from': today,
                             'to': future_time
-                        }
+                        },
+                        # Remove any filters for in-play status to include all markets
                     },
                     'maxResults': max_results,
                     'marketProjection': [
@@ -155,7 +156,7 @@ class BetfairClient:
                     resp_json = await resp.json()
                     if 'result' in resp_json:
                         markets_found = len(resp_json['result'])
-                        self.logger.info(f"Found {markets_found} football markets in the next {hours_ahead} hours")
+                        self.logger.info(f"Found {markets_found} football markets (includes in-play) in the next {hours_ahead} hours")
                         return resp_json['result']
                     else:
                         self.logger.error(f'Error in response: {resp_json.get("error")}')
