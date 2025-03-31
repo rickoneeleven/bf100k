@@ -1,13 +1,21 @@
+/* --- FILE: web/dashboard.css --- */
 :root {
+    /* Ultra Dark Theme Colors */
     --primary-color: #3498db;
-    --secondary-color: #2980b9;
-    --background-color: #f5f5f5;
-    --card-bg: #ffffff;
-    --text-color: #333333;
-    --border-color: #e0e0e0;
+    --secondary-color: #5dade2;
+    --background-color: #111821;      /* Very dark main background */
+    --card-bg: #1a222c;            /* Very dark card background */
+    --text-color: #c5ced6;            /* Slightly softer light text */
+    --border-color: #2a3b4d;        /* Darker, less visible border */
     --success-color: #2ecc71;
     --error-color: #e74c3c;
     --warning-color: #f39c12;
+    --label-color: #90a4ae;          /* Softer grey for labels */
+    --table-header-bg: #2a3b4d;     /* Matching border color for headers */
+    --log-viewer-bg: #0d1117;         /* Extremely dark (almost black) for log */
+    --log-text-color: #a0b0bd;       /* Soft blue-grey for log text */
+    --link-color: var(--primary-color);
+    --link-hover-color: var(--secondary-color);
 }
 
 * {
@@ -43,7 +51,7 @@ h1 {
 }
 
 .timestamp {
-    color: #666;
+    color: var(--label-color);
     font-size: 0.9rem;
 }
 
@@ -57,17 +65,27 @@ h1 {
 .card {
     background-color: var(--card-bg);
     border-radius: 8px;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
     padding: 20px;
     overflow: hidden;
+    border: 1px solid var(--border-color);
+}
+
+/* Specific styling for the log viewer card */
+.card.log-viewer {
+    padding: 0; /* Remove padding from the card itself */
+    background-color: var(--card-bg); /* Ensure card bg is consistent */
+    border: 1px solid var(--border-color); /* Keep card border */
 }
 
 .card h2 {
     margin-bottom: 15px;
     color: var(--secondary-color);
     border-bottom: 1px solid var(--border-color);
-    padding-bottom: 10px;
+    padding: 20px 20px 10px 20px; /* Padding for heading */
+    font-size: 1.3rem;
 }
+
 
 .status-content, .stats-content {
     display: grid;
@@ -82,13 +100,16 @@ h1 {
 
 .label {
     font-weight: bold;
-    font-size: 0.9rem;
-    color: #666;
+    font-size: 0.85rem;
+    color: var(--label-color);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
 
 .value {
     font-size: 1.1rem;
     margin-top: 5px;
+    color: var(--text-color);
 }
 
 .positive {
@@ -105,7 +126,6 @@ h1 {
     grid-column: span 2;
 }
 
-/* Active bet grid layout */
 .active-bet-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -118,7 +138,6 @@ h1 {
     gap: 15px;
 }
 
-/* Adjust the layout to match the top cards */
 .active-bet .bet-item {
     margin-bottom: 10px;
 }
@@ -138,33 +157,97 @@ table {
 }
 
 th, td {
-    padding: 10px;
+    padding: 10px 12px;
     border: 1px solid var(--border-color);
     text-align: left;
 }
 
 th {
-    background-color: #f2f2f2;
-}
-
-.log-viewer {
-    margin-top: 20px;
-}
-
-#log-content {
-    max-height: 400px;
-    overflow-y: auto;
-    background-color: #f8f8f8;
-    border-radius: 4px;
-    padding: 15px;
-    font-family: monospace;
+    background-color: var(--table-header-bg);
+    color: var(--text-color);
+    font-weight: bold;
     font-size: 0.9rem;
+    text-transform: uppercase;
 }
 
-pre {
+td {
+     background-color: var(--card-bg);
+}
+
+tr:nth-child(even) td {
+    background-color: #1f2a36;
+}
+
+
+/* Log Container - just a structural div now */
+#log-container {
+    padding: 0;
+    margin: 0;
+    border: none;
+    background-color: transparent;
+    box-shadow: none;
+}
+
+/* --- MODIFICATION START --- */
+/* Log Content area - holds padding and background for the PRE tag */
+#log-content {
+    max-height: none;
+    overflow-y: visible;
+    background-color: var(--log-viewer-bg); /* Apply the very dark background HERE */
+    color: var(--log-text-color);           /* Apply text color HERE */
+    padding: 15px;                          /* Apply padding HERE */
+    margin: 20px;                           /* Add margin to space it from card edges */
+    margin-top: 0;                          /* No margin needed above if title has padding */
+    border: none;
+    border-radius: 4px;                     /* Optional: slight radius for the log block */
+    outline: none;
+}
+
+/* Pre tag styling - make it blend */
+#log-content pre {
+    background-color: transparent;          /* Inherit background from #log-content */
+    color: inherit;                         /* Inherit text color */
+    padding: 0;
+    margin: 0;
+    border: none;
+    outline: none;
     white-space: pre-wrap;
     word-wrap: break-word;
+    font-family: monospace;
+    font-size: 0.9rem;
+    line-height: 1.4;
 }
+/* --- MODIFICATION END --- */
+
+
+.log-controls {
+    text-align: center;
+    margin: 0; /* Remove margin */
+    padding: 15px 20px; /* Use consistent padding */
+    border-top: 1px solid var(--border-color);
+     background-color: var(--card-bg); /* Match card background */
+     border-bottom-left-radius: 8px; /* Match card radius */
+     border-bottom-right-radius: 8px; /* Match card radius */
+}
+
+.log-controls a {
+    display: inline-block;
+    padding: 8px 15px;
+    background-color: var(--primary-color);
+    color: #fff;
+    text-decoration: none;
+    border-radius: 4px;
+    margin: 0 5px;
+    transition: background-color 0.2s ease;
+    font-size: 0.9rem;
+    border: none;
+    cursor: pointer;
+}
+
+.log-controls a:hover {
+    background-color: var(--secondary-color);
+}
+
 
 .win {
     color: var(--success-color);
@@ -180,21 +263,41 @@ pre {
     .grid-container {
         grid-template-columns: 1fr;
     }
-    
+
     .active-bet, .bet-history {
         grid-column: span 1;
     }
-    
+
     .status-content, .stats-content {
         grid-template-columns: 1fr;
     }
-    
+
     .active-bet-grid {
         grid-template-columns: 1fr;
     }
 }
 
+.status-inplay {
+    color: var(--success-color);
+    font-weight: bold;
+}
+
+.status-notinplay {
+    color: var(--error-color);
+    font-weight: bold;
+}
+
 .value.positive {
     color: var(--success-color);
     font-weight: bold;
+}
+
+a {
+    color: var(--link-color);
+    text-decoration: none;
+}
+
+a:hover {
+    color: var(--link-hover-color);
+    text-decoration: underline;
 }
