@@ -6,48 +6,6 @@
     <title>OES Dashboard</title>
     <link rel="stylesheet" href="dashboard.css">
     <meta http-equiv="refresh" content="60">
-    <style>
-        /* Inline styles for status colors */
-        .status-inplay {
-            color: #2ecc71;
-            font-weight: bold;
-        }
-
-        .status-notinplay {
-            color: #e74c3c;
-            font-weight: bold;
-        }
-
-        /* Styles for log viewer changes */
-        #log-content {
-            max-height: none;
-            overflow-y: visible;
-            background-color: #f8f8f8;
-            border-radius: 4px;
-            padding: 15px;
-            font-family: monospace;
-            font-size: 0.9rem;
-        }
-
-        .log-controls {
-            text-align: center;
-            margin-top: 10px;
-        }
-
-        .log-controls a {
-            display: inline-block;
-            padding: 5px 10px;
-            background-color: #3498db;
-            color: white;
-            text-decoration: none;
-            border-radius: 4px;
-            margin: 0 5px;
-        }
-
-        .log-controls a:hover {
-            background-color: #2980b9;
-        }
-    </style>
 </head>
 <body>
     <div class="container">
@@ -57,6 +15,7 @@
         </header>
 
         <div class="grid-container">
+            <!-- System Status Card -->
             <div class="card status">
                 <h2>System Status</h2>
                 <div class="status-content">
@@ -87,6 +46,7 @@
                 </div>
             </div>
 
+            <!-- Statistics Card -->
             <div class="card statistics">
                 <h2>Statistics</h2>
                 <div class="stats-content">
@@ -113,13 +73,13 @@
                 </div>
             </div>
 
+            <!-- Active Bet Card -->
             <div class="card active-bet">
                 <h2>Active Bet</h2>
                 <div id="active-bet-content">
                     <p id="no-active-bet" style="display: none;">No active bet</p>
                     <div id="active-bet-details" style="display: none;">
                         <div class="status-content">
-                            <!-- Left column - basic bet details -->
                             <div class="status-item">
                                 <span class="label">Event:</span>
                                 <span class="value" id="event-name">Loading...</span>
@@ -170,7 +130,7 @@
             </div>
         </div>
 
-        <!-- Log viewer moved above bet history -->
+        <!-- Log Viewer Card -->
         <div class="card log-viewer">
             <h2>Latest Log Entries</h2>
             <div id="log-container">
@@ -184,7 +144,7 @@
             </div>
         </div>
 
-        <!-- Bet history now after log viewer -->
+        <!-- Bet History Card -->
         <div class="card bet-history">
             <h2>Bet History</h2>
             <div id="bet-history-content">
@@ -197,12 +157,12 @@
                             <th>Stake</th>
                             <th>Result</th>
                             <th>Profit/Loss</th>
-                            <th>Cumulative Loss</th> <!-- New Column Header -->
+                            <th>Cumulative Loss</th>
                         </tr>
                     </thead>
                     <tbody id="history-body">
                         <tr>
-                            <td colspan="7">Loading bet history...</td> <!-- Updated colspan -->
+                            <td colspan="7">Loading bet history...</td>
                         </tr>
                     </tbody>
                 </table>
