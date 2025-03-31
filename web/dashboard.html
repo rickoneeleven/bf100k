@@ -12,12 +12,12 @@
             color: #2ecc71;
             font-weight: bold;
         }
-        
+
         .status-notinplay {
             color: #e74c3c;
             font-weight: bold;
         }
-        
+
         /* Styles for log viewer changes */
         #log-content {
             max-height: none;
@@ -28,12 +28,12 @@
             font-family: monospace;
             font-size: 0.9rem;
         }
-        
+
         .log-controls {
             text-align: center;
             margin-top: 10px;
         }
-        
+
         .log-controls a {
             display: inline-block;
             padding: 5px 10px;
@@ -43,7 +43,7 @@
             border-radius: 4px;
             margin: 0 5px;
         }
-        
+
         .log-controls a:hover {
             background-color: #2980b9;
         }
@@ -81,7 +81,7 @@
                         <span class="value" id="next-stake">Loading...</span>
                     </div>
                     <div class="status-item">
-                        <span class="label">Total Profit/Loss:</span>
+                        <span class="label">Total Initial Stakes Lost:</span>
                         <span class="value" id="profit-loss">Loading...</span>
                     </div>
                 </div>
@@ -197,11 +197,12 @@
                             <th>Stake</th>
                             <th>Result</th>
                             <th>Profit/Loss</th>
+                            <th>Cumulative Loss</th> <!-- New Column Header -->
                         </tr>
                     </thead>
                     <tbody id="history-body">
                         <tr>
-                            <td colspan="6">Loading bet history...</td>
+                            <td colspan="7">Loading bet history...</td> <!-- Updated colspan -->
                         </tr>
                     </tbody>
                 </table>
