@@ -5,6 +5,7 @@ betting_service.py
 Main betting service that coordinates betting operations.
 Refactored to use actual Betfair results in both live and dry run modes.
 Result checking improved to use get_fresh_market_data for resilience.
+Added spread width protection to ensure bets are only placed when market spread is tight.
 """
 
 import logging
@@ -12,9 +13,46 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Any
 
-from .betfair_client import BetfairClient
-from .betting_state_manager import BettingStateManager
-from .config_manager import ConfigManager
+
+def get_max_spread_percentage(odds):
+    """
+    Determine the maximum acceptable spread percentage based on the odds range.
+    
+    Args:
+        odds: The back odds
+        
+    Returns:
+        float: Maximum acceptable spread as a percentage
+    """
+    if odds < 2.0:
+        return 0.75
+    elif odds < 4.0:
+        return 1.5
+    elif odds < 10.0:
+        return 2.5
+    else:
+        return 3.5
+
+
+def is_spread_acceptable(back_odds, lay_odds):
+    """
+    Check if the spread between back and lay odds is acceptable.
+    
+    Args:
+        back_odds: The back (blue) odds
+        lay_odds: The lay (pink) odds
+        
+    Returns:
+        bool: True if spread is acceptable, False otherwise
+    """
+    if back_odds <= 0 or lay_odds <= 0:
+        return False
+        
+    max_spread_percentage = get_max_spread_percentage(back_odds)
+    spread_percentage = ((lay_odds - back_odds) / back_odds) * 100
+    
+    return spread_percentage <= max_spread_percentage
+
 
 class BettingService:
     """
@@ -23,9 +61,9 @@ class BettingService:
 
     def __init__(
         self,
-        betfair_client: BetfairClient,
-        state_manager: BettingStateManager,
-        config_manager: ConfigManager
+        betfair_client,
+        state_manager,
+        config_manager
     ):
         self.betfair_client = betfair_client
         self.state_manager = state_manager
@@ -44,7 +82,7 @@ class BettingService:
     async def scan_markets(self) -> Optional[Dict]:
         """
         Scan available markets for betting opportunities with focus on high-liquidity markets.
-        Updated to consider only the top 2 favorites with odds of 3.5+.
+        Updated to consider only the top 2 favorites with odds of 3.5+ and acceptable spreads.
 
         Returns:
             Dict containing betting opportunity if found, None otherwise
@@ -72,7 +110,7 @@ class BettingService:
             self.logger.info(
                 f"Scanning markets - Cycle #{state.current_cycle}, "
                 f"Bet #{state.current_bet_in_cycle + 1} in cycle, "
-                f"Next stake: £{next_stake:.2f}"
+                f"Next stake: Â£{next_stake:.2f}"
             )
 
             # Get football markets for the next N hours including in-play
@@ -108,7 +146,7 @@ class BettingService:
 
                 self.logger.info(
                     f"Top Market #{idx+1}: {event_name} (ID: {market_id}), "
-                    f"Total Matched: £{total_matched:,.2f}, Start: {market_start}"
+                    f"Total Matched: Â£{total_matched:,.2f}, Start: {market_start}"
                 )
 
             # Analyze each of the top markets sequentially
@@ -129,7 +167,7 @@ class BettingService:
                 # Check minimum market liquidity
                 total_matched = market_data.get('totalMatched', 0)
                 if total_matched < min_liquidity:
-                    self.logger.info(f"Skipping market {market_id} with insufficient liquidity: £{total_matched:,.2f} < £{min_liquidity:,.2f}")
+                    self.logger.info(f"Skipping market {market_id} with insufficient liquidity: Â£{total_matched:,.2f} < Â£{min_liquidity:,.2f}")
                     continue
 
                 # Skip if market is not OPEN (e.g., SUSPENDED, CLOSED) unless it's INPLAY
@@ -176,7 +214,23 @@ class BettingService:
                         self.logger.debug(f"Zero odds found for {team_name} (ID: {selection_id})")
                         continue
 
-                    self.logger.debug(f"Selection {team_name} (ID: {selection_id}): Odds: {back_price}, Available: £{available_size:.2f}")
+                    # Get best lay price if available
+                    available_to_lay = runner_ex.get('availableToLay', [])
+                    lay_price = None
+                    if available_to_lay:
+                        lay_price = available_to_lay[0].get('price', 0)
+                        
+                        # Check if spread is acceptable
+                        if lay_price > 0 and not is_spread_acceptable(back_price, lay_price):
+                            spread_percentage = ((lay_price - back_price) / back_price) * 100
+                            self.logger.info(
+                                f"Skipping selection {team_name} (ID: {selection_id}) due to wide spread: "
+                                f"{back_price}/{lay_price} ({spread_percentage:.2f}%), "
+                                f"max allowed: {get_max_spread_percentage(back_price):.2f}%"
+                            )
+                            continue
+
+                    self.logger.debug(f"Selection {team_name} (ID: {selection_id}): Odds: {back_price}, Available: Â£{available_size:.2f}")
 
                     all_selections.append({
                         'runner': runner,
@@ -208,7 +262,7 @@ class BettingService:
                     if selection['available_volume'] < required_liquidity:
                         self.logger.debug(
                             f"Insufficient liquidity for {selection['team_name']} (ID: {selection['selection_id']}): "
-                            f"Available £{selection['available_volume']:.2f} < Required £{required_liquidity:.2f}"
+                            f"Available Â£{selection['available_volume']:.2f} < Required Â£{required_liquidity:.2f}"
                         )
                         continue
 
@@ -224,7 +278,7 @@ class BettingService:
                     self.logger.info(
                         f"Found betting opportunity in market {market_id}: {event_name}, "
                         f"Selection: {best_opportunity['team_name']} (ID: {best_opportunity['selection_id']}) @ {best_opportunity['odds']}, "
-                        f"Available: £{best_opportunity['available_volume']:.2f}"
+                        f"Available: Â£{best_opportunity['available_volume']:.2f}"
                     )
 
                     # Create bet details
@@ -268,7 +322,7 @@ class BettingService:
                 f"Attempting to place bet on event: {bet_details.get('event_name')}, "
                 f"Selection: {bet_details.get('team_name')} (ID: {bet_details.get('selection_id')}), "
                 f"Odds: {bet_details.get('odds')}, "
-                f"Stake: £{bet_details.get('stake')}"
+                f"Stake: Â£{bet_details.get('stake')}"
             )
 
             if self.dry_run:
@@ -277,7 +331,7 @@ class BettingService:
                     f"Match: {bet_details.get('event_name')}, "
                     f"Selection: {bet_details.get('team_name')} (ID: {bet_details.get('selection_id')}), "
                     f"Odds: {bet_details.get('odds')}, "
-                    f"Stake: £{bet_details.get('stake')}"
+                    f"Stake: Â£{bet_details.get('stake')}"
                 )
 
                 # Record bet in state manager ONLY in dry run
@@ -390,9 +444,9 @@ class BettingService:
 
                 self.logger.info(
                     f"Bet WON! Market: {market_id}, Selection: {selection_id}. "
-                    f"Gross Profit: £{gross_profit:.2f}, "
-                    f"Commission ({commission_rate*100}%): £{commission:.2f}, "
-                    f"Net Profit: £{net_profit:.2f}"
+                    f"Gross Profit: Â£{gross_profit:.2f}, "
+                    f"Commission ({commission_rate*100}%): Â£{commission:.2f}, "
+                    f"Net Profit: Â£{net_profit:.2f}"
                 )
             else:
                 # Loss results in zero profit and commission, loss of stake
@@ -401,7 +455,7 @@ class BettingService:
                 gross_profit = 0.0 # Explicitly set gross profit to 0 for losses
                 self.logger.info(
                     f"Bet LOST. Market: {market_id}, Selection: {selection_id}. "
-                    f"Lost Stake: £{stake:.2f}. Reason: {result_message}"
+                    f"Lost Stake: Â£{stake:.2f}. Reason: {result_message}"
                  )
 
             # Record result in state manager
@@ -412,7 +466,7 @@ class BettingService:
 
             # Check if target amount reached AFTER recording the result
             if won and self.state_manager.check_target_reached():
-                self.logger.info(f"Target amount of £{self.state_manager.state.target_amount} reached! Resetting cycle.")
+                self.logger.info(f"Target amount of Â£{self.state_manager.state.target_amount} reached! Resetting cycle.")
                 # State manager's check_target_reached handles the cycle reset logic now
 
             return True # Bet was settled (or timed out)
