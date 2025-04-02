@@ -3,6 +3,7 @@ settle_bet_command.py
 
 Command pattern implementation for bet settlement operations.
 Updated to work with the event-sourced ledger approach.
+Modified to never automatically settle bets due to timeouts.
 """
 
 from dataclasses import dataclass
@@ -99,7 +100,7 @@ class BetSettlementCommand:
             self.logger.info(
                 f"Checking result for bet: Market {market_id}, "
                 f"Selection {selection_id} ({team_name}), "
-                f"Stake: £{stake}, Odds: {odds}"
+                f"Stake: Â£{stake}, Odds: {odds}"
             )
             
             # Get result from Betfair using consistent method
@@ -119,9 +120,9 @@ class BetSettlementCommand:
                 net_profit = gross_profit - commission
                 
                 self.logger.info(
-                    f"Bet won: Gross profit: £{gross_profit:.2f}, "
-                    f"Commission (5%): £{commission:.2f}, "
-                    f"Net profit: £{net_profit:.2f}"
+                    f"Bet won: Gross profit: Â£{gross_profit:.2f}, "
+                    f"Commission (5%): Â£{commission:.2f}, "
+                    f"Net profit: Â£{net_profit:.2f}"
                 )
                 
             return won, gross_profit, commission, net_profit, status_message
@@ -165,9 +166,9 @@ class BetSettlementCommand:
                 
                 self.logger.info(
                     f"Using forced settlement result: Won: {won}, "
-                    f"Gross profit: £{gross_profit:.2f}, "
-                    f"Commission: £{commission:.2f}, "
-                    f"Net profit: £{net_profit:.2f} "
+                    f"Gross profit: Â£{gross_profit:.2f}, "
+                    f"Commission: Â£{commission:.2f}, "
+                    f"Net profit: Â£{net_profit:.2f} "
                     f"for selection {selection_id} ({team_name})"
                 )
             else:
@@ -176,9 +177,9 @@ class BetSettlementCommand:
                 
                 self.logger.info(
                     f"Got result from Betfair: Won: {won}, "
-                    f"Gross profit: £{gross_profit:.2f}, "
-                    f"Commission: £{commission:.2f}, "
-                    f"Net profit: £{net_profit:.2f}, "
+                    f"Gross profit: Â£{gross_profit:.2f}, "
+                    f"Commission: Â£{commission:.2f}, "
+                    f"Net profit: Â£{net_profit:.2f}, "
                     f"Status: {status} "
                     f"for selection {selection_id} ({team_name})"
                 )
@@ -226,7 +227,7 @@ class BetSettlementCommand:
                 self.logger.info(
                     f"Successfully settled bet: Market ID {request.market_id}, "
                     f"Selection: {selection_id} ({team_name}), "
-                    f"Won: {won}, Net Profit: £{net_profit}"
+                    f"Won: {won}, Net Profit: Â£{net_profit}"
                 )
                 
                 # Get updated bet details
@@ -315,7 +316,6 @@ class BetSettlementCommand:
             
             check_interval_minutes = result_config.get('check_interval_minutes', 5)
             max_check_attempts = result_config.get('max_check_attempts', 24)
-            event_timeout_hours = result_config.get('event_timeout_hours', 12)
             
             self.logger.info(
                 f"Starting settlement poller (interval: {check_interval_minutes} minutes, "
@@ -339,8 +339,8 @@ class BetSettlementCommand:
                     if settled_bets:
                         self.logger.info(f"Settled {len(settled_bets)} bets")
                         
-                    # Check for timed out bets
-                    await self._check_for_timed_out_bets(event_timeout_hours)
+                    # Check for bet issues that need attention but DON'T settle them
+                    await self._check_for_bet_issues()
                 else:
                     self.logger.info("No active bets to check - pausing settlement poller")
                     break
@@ -364,34 +364,45 @@ class BetSettlementCommand:
             self.logger.error(f"Error in settlement poller: {str(e)}")
             self.logger.exception(e)
 
-    async def _check_for_timed_out_bets(self, timeout_hours: int) -> None:
+    async def _check_for_bet_issues(self) -> List[Dict]:
         """
-        Check for bets that have timed out based on event start time and in-play status
+        Check for bets that might have issues but DO NOT automatically settle them.
+        Instead, provide detailed logging for manual troubleshooting.
         
-        Args:
-            timeout_hours: Number of hours after which to consider an event timed out
+        Returns:
+            List of bets with potential issues
         """
         try:
             # Get active bets
             active_bets = await self.bet_repository.get_active_bets()
             
             if not active_bets:
-                return
+                return []
                 
             now = datetime.now(timezone.utc)
+            problem_bets = []
             
             for bet in active_bets:
                 market_id = bet["market_id"]
+                selection_id = bet["selection_id"]
+                team_name = bet.get("team_name", "Unknown")
+                event_name = bet.get("event_name", "Unknown Event")
                 
                 # Get current market status for checking in-play and event start times
                 market_status = await self.betfair_client.get_fresh_market_data(market_id)
                 
                 if not market_status:
-                    self.logger.warning(f"Could not retrieve market status for {market_id}")
+                    self.logger.warning(
+                        f"ATTENTION NEEDED: Could not retrieve market status for {market_id}, "
+                        f"Event: {event_name}, Selection: {team_name}. "
+                        f"Unable to check result. Manual verification required."
+                    )
+                    problem_bets.append({**bet, "issue": "Cannot retrieve market data"})
                     continue
                 
                 # Check if market is in-play
                 is_inplay = market_status.get('inplay', False)
+                current_status = market_status.get('status', 'Unknown')
                 
                 # Get market start time
                 market_start_time = None
@@ -407,84 +418,77 @@ class BetSettlementCommand:
                 except (ValueError, TypeError) as e:
                     self.logger.warning(f"Could not parse market start time: {e}")
                 
-                # Calculate timeout conditions based on event status and start time
+                # Get bet placement time
                 bet_placement_time = datetime.fromisoformat(bet["timestamp"])
-                should_timeout = False
-                timeout_reason = ""
                 
+                # Identify potential issues without auto-settling
+                issue_type = None
+                issue_details = None
+                
+                # Check for stalled in-play markets
                 if is_inplay and market_start_time:
-                    # If event is in-play, check how long it's been in-play
                     inplay_duration = now - market_start_time
                     max_inplay_hours = 4  # Most sports events don't last more than 4 hours
                     
                     if inplay_duration.total_seconds() > max_inplay_hours * 3600:
-                        should_timeout = True
-                        timeout_reason = (
-                            f"Event has been in-play for over {max_inplay_hours} hours "
-                            f"({inplay_duration.total_seconds() / 3600:.1f} hours). "
+                        issue_type = "Long in-play duration"
+                        issue_details = (
+                            f"Event has been in-play for {inplay_duration.total_seconds() / 3600:.1f} hours, "
+                            f"which exceeds typical game duration of {max_inplay_hours} hours. "
                             f"Event started at {market_start_time.isoformat()}"
                         )
-                elif market_start_time:
-                    # If event has not started yet but was scheduled in the past
-                    if market_start_time < now:
-                        # Check how long ago the event should have started
-                        delay = now - market_start_time
-                        max_delay_hours = 6  # Allow up to 6 hours delay for event to start
-                        
-                        if delay.total_seconds() > max_delay_hours * 3600:
-                            should_timeout = True
-                            timeout_reason = (
-                                f"Event was scheduled to start {delay.total_seconds() / 3600:.1f} hours ago "
-                                f"at {market_start_time.isoformat()} but has not started yet"
-                            )
-                    else:
-                        # Event is in the future, check if bet is very old
-                        bet_age = now - bet_placement_time
-                        max_waiting_days = 7  # Allow up to 7 days from bet placement to event
-                        
-                        if bet_age.total_seconds() > max_waiting_days * 24 * 3600:
-                            should_timeout = True
-                            timeout_reason = (
-                                f"Bet is {bet_age.total_seconds() / (24 * 3600):.1f} days old. "
-                                f"Placed at {bet_placement_time.isoformat()}, "
-                                f"event scheduled for {market_start_time.isoformat()}"
-                            )
-                else:
-                    # No market start time available, use bet age as fallback
-                    bet_age = now - bet_placement_time
-                    max_bet_age_days = 3  # Maximum bet age when market time unknown (3 days)
+                
+                # Check for events scheduled in the past but not started/settled
+                elif market_start_time and market_start_time < now and current_status not in ['CLOSED', 'SETTLED']:
+                    delay = now - market_start_time
+                    max_delay_hours = 6  # Allow up to 6 hours delay for event to start
                     
-                    if bet_age.total_seconds() > max_bet_age_days * 24 * 3600:
-                        should_timeout = True
-                        timeout_reason = (
-                            f"Bet is {bet_age.total_seconds() / (24 * 3600):.1f} days old "
-                            f"and no market start time available. "
-                            f"Placed at {bet_placement_time.isoformat()}"
+                    if delay.total_seconds() > max_delay_hours * 3600:
+                        issue_type = "Event scheduled in past but not settled"
+                        issue_details = (
+                            f"Event was scheduled to start {delay.total_seconds() / 3600:.1f} hours ago "
+                            f"at {market_start_time.isoformat()} but status is {current_status}"
                         )
                 
-                # Timeout the bet if any conditions met
-                if should_timeout:
+                # Check for very old bets regardless of market status
+                bet_age = now - bet_placement_time
+                max_bet_age_days = 3  # Very old bet (3 days) needs attention
+                
+                if bet_age.total_seconds() > max_bet_age_days * 24 * 3600:
+                    issue_type = "Aged bet"
+                    issue_details = (
+                        f"Bet is {bet_age.total_seconds() / (24 * 3600):.1f} days old. "
+                        f"Placed at {bet_placement_time.isoformat()}, "
+                        f"Current market status: {current_status}"
+                    )
+                
+                # Log detailed warning for any issues found
+                if issue_type:
                     self.logger.warning(
-                        f"Bet on market {market_id} has timed out. "
-                        f"Selection: {bet['selection_id']} ({bet.get('team_name', 'Unknown')}). "
-                        f"Reason: {timeout_reason}"
+                        f"ATTENTION NEEDED: Possible issue with bet on market {market_id}, "
+                        f"Event: {event_name}, Selection: {team_name} (ID: {selection_id}). "
+                        f"Issue type: {issue_type}. Details: {issue_details}. "
+                        f"Current market status: {current_status}. "
+                        f"Manual verification/resolution required."
                     )
                     
-                    # Force settlement as a loss
-                    request = BetSettlementRequest(
-                        market_id=market_id,
-                        forced_settlement=True,
-                        force_won=False,
-                        force_profit=0.0
-                    )
-                    
-                    # Execute forced settlement using the event-sourced approach
-                    await self.execute(request)
-                    
-                    self.logger.info(
-                        f"Forced settlement of timed out bet on market {market_id}"
-                    )
+                    problem_bets.append({
+                        **bet, 
+                        "issue": issue_type,
+                        "issue_details": issue_details,
+                        "current_status": current_status
+                    })
+            
+            # Summary log if issues found
+            if problem_bets:
+                self.logger.warning(
+                    f"Found {len(problem_bets)} bet(s) that may need manual attention. "
+                    f"NO automatic settlement performed."
+                )
+            
+            return problem_bets
                     
         except Exception as e:
-            self.logger.error(f"Error checking for timed out bets: {str(e)}")
+            self.logger.error(f"Error checking for bet issues: {str(e)}")
             self.logger.exception(e)
+            return []

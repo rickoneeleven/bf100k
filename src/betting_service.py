@@ -1,4 +1,3 @@
-# --- FILE: src/betting_service.py ---
 """
 betting_service.py
 
@@ -6,6 +5,7 @@ Main betting service that coordinates betting operations.
 Refactored to use actual Betfair results in both live and dry run modes.
 Result checking improved to use get_fresh_market_data for resilience.
 Added spread width protection to ensure bets are only placed when market spread is tight.
+Removed automatic bet timeout settlement - now only identifies potential issues for manual resolution.
 """
 
 import logging
@@ -110,7 +110,7 @@ class BettingService:
             self.logger.info(
                 f"Scanning markets - Cycle #{state.current_cycle}, "
                 f"Bet #{state.current_bet_in_cycle + 1} in cycle, "
-                f"Next stake: Â£{next_stake:.2f}"
+                f"Next stake: ÃÂ£{next_stake:.2f}"
             )
 
             # Get football markets for the next N hours including in-play
@@ -146,7 +146,7 @@ class BettingService:
 
                 self.logger.info(
                     f"Top Market #{idx+1}: {event_name} (ID: {market_id}), "
-                    f"Total Matched: Â£{total_matched:,.2f}, Start: {market_start}"
+                    f"Total Matched: ÃÂ£{total_matched:,.2f}, Start: {market_start}"
                 )
 
             # Analyze each of the top markets sequentially
@@ -167,7 +167,7 @@ class BettingService:
                 # Check minimum market liquidity
                 total_matched = market_data.get('totalMatched', 0)
                 if total_matched < min_liquidity:
-                    self.logger.info(f"Skipping market {market_id} with insufficient liquidity: Â£{total_matched:,.2f} < Â£{min_liquidity:,.2f}")
+                    self.logger.info(f"Skipping market {market_id} with insufficient liquidity: ÃÂ£{total_matched:,.2f} < ÃÂ£{min_liquidity:,.2f}")
                     continue
 
                 # Skip if market is not OPEN (e.g., SUSPENDED, CLOSED) unless it's INPLAY
@@ -230,7 +230,7 @@ class BettingService:
                             )
                             continue
 
-                    self.logger.debug(f"Selection {team_name} (ID: {selection_id}): Odds: {back_price}, Available: Â£{available_size:.2f}")
+                    self.logger.debug(f"Selection {team_name} (ID: {selection_id}): Odds: {back_price}, Available: ÃÂ£{available_size:.2f}")
 
                     all_selections.append({
                         'runner': runner,
@@ -262,7 +262,7 @@ class BettingService:
                     if selection['available_volume'] < required_liquidity:
                         self.logger.debug(
                             f"Insufficient liquidity for {selection['team_name']} (ID: {selection['selection_id']}): "
-                            f"Available Â£{selection['available_volume']:.2f} < Required Â£{required_liquidity:.2f}"
+                            f"Available ÃÂ£{selection['available_volume']:.2f} < Required ÃÂ£{required_liquidity:.2f}"
                         )
                         continue
 
@@ -278,7 +278,7 @@ class BettingService:
                     self.logger.info(
                         f"Found betting opportunity in market {market_id}: {event_name}, "
                         f"Selection: {best_opportunity['team_name']} (ID: {best_opportunity['selection_id']}) @ {best_opportunity['odds']}, "
-                        f"Available: Â£{best_opportunity['available_volume']:.2f}"
+                        f"Available: ÃÂ£{best_opportunity['available_volume']:.2f}"
                     )
 
                     # Create bet details
@@ -322,7 +322,7 @@ class BettingService:
                 f"Attempting to place bet on event: {bet_details.get('event_name')}, "
                 f"Selection: {bet_details.get('team_name')} (ID: {bet_details.get('selection_id')}), "
                 f"Odds: {bet_details.get('odds')}, "
-                f"Stake: Â£{bet_details.get('stake')}"
+                f"Stake: ÃÂ£{bet_details.get('stake')}"
             )
 
             if self.dry_run:
@@ -331,7 +331,7 @@ class BettingService:
                     f"Match: {bet_details.get('event_name')}, "
                     f"Selection: {bet_details.get('team_name')} (ID: {bet_details.get('selection_id')}), "
                     f"Odds: {bet_details.get('odds')}, "
-                    f"Stake: Â£{bet_details.get('stake')}"
+                    f"Stake: ÃÂ£{bet_details.get('stake')}"
                 )
 
                 # Record bet in state manager ONLY in dry run
@@ -383,36 +383,29 @@ class BettingService:
                 f"Selection {selection_id} ({team_name})"
             )
 
-            # --- MODIFICATION START ---
             # Use the more resilient get_fresh_market_data method
             self.logger.debug(f"Calling get_fresh_market_data for market {market_id}")
             market_data = await self.betfair_client.get_fresh_market_data(market_id)
-            # --- MODIFICATION END ---
 
             if not market_data:
-                # This should be less likely now, but handle it just in case
-                self.logger.warning(f"Could not retrieve any market data (book or catalogue) for {market_id}")
-                # Check for timeout as a fallback if data retrieval fails completely
-                if self._should_timeout_bet(active_bet, {}): # Pass empty dict if no data
-                     self.logger.warning(f"Market {market_id} has timed out based on bet age. Forcing settlement as loss.")
-                     won = False
-                     result_message = "Market timed out (data retrieval failed)"
-                     # Proceed to settlement logic below
-                else:
-                     self.logger.info(f"Market data retrieval failed, and bet not timed out yet.")
-                     return False
+                # Log detailed warning but do not auto-settle
+                self.logger.warning(
+                    f"ATTENTION NEEDED: Could not retrieve market data for {market_id}, "
+                    f"Selection: {selection_id} ({team_name}). "
+                    f"Manual verification required."
+                )
+                return False
             else:
                 # We have at least partial market data (book data)
                 self.logger.debug(f"Successfully retrieved market data (potentially partial) for {market_id}. Status: {market_data.get('status')}")
+                
                 # Check if market is settled based on the status from book data
                 market_status = market_data.get('status')
                 if market_status not in ['CLOSED', 'SETTLED']:
-                    # Check if the market should have timed out based on start time/age
-                    if self._should_timeout_bet(active_bet, market_data):
-                        self.logger.warning(f"Market {market_id} status is '{market_status}', but bet has timed out. Forcing settlement as loss.")
-                        won = False
-                        result_message = f"Market timed out (status: {market_status})"
-                        # Proceed to settlement logic below
+                    # Check if the market is potentially stuck or delayed
+                    if self._has_potential_issues(active_bet, market_data):
+                        # Just log warning without settling
+                        return False
                     else:
                         self.logger.info(f"Market {market_id} not yet settled. Current status: {market_status}")
                         return False
@@ -424,9 +417,8 @@ class BettingService:
                     )
                     self.logger.info(f"Result determined for market {market_id}: Won={won}, Message='{result_message}'")
 
-
             # --- Settlement Logic ---
-            # This part executes if market is settled (CLOSED/SETTLED) or timed out
+            # This part executes if market is settled (CLOSED/SETTLED)
 
             # Calculate profit and commission
             stake = active_bet.get('stake', 0.0)
@@ -444,9 +436,9 @@ class BettingService:
 
                 self.logger.info(
                     f"Bet WON! Market: {market_id}, Selection: {selection_id}. "
-                    f"Gross Profit: Â£{gross_profit:.2f}, "
-                    f"Commission ({commission_rate*100}%): Â£{commission:.2f}, "
-                    f"Net Profit: Â£{net_profit:.2f}"
+                    f"Gross Profit: ÃÂ£{gross_profit:.2f}, "
+                    f"Commission ({commission_rate*100}%): ÃÂ£{commission:.2f}, "
+                    f"Net Profit: ÃÂ£{net_profit:.2f}"
                 )
             else:
                 # Loss results in zero profit and commission, loss of stake
@@ -455,7 +447,7 @@ class BettingService:
                 gross_profit = 0.0 # Explicitly set gross profit to 0 for losses
                 self.logger.info(
                     f"Bet LOST. Market: {market_id}, Selection: {selection_id}. "
-                    f"Lost Stake: Â£{stake:.2f}. Reason: {result_message}"
+                    f"Lost Stake: ÃÂ£{stake:.2f}. Reason: {result_message}"
                  )
 
             # Record result in state manager
@@ -466,32 +458,37 @@ class BettingService:
 
             # Check if target amount reached AFTER recording the result
             if won and self.state_manager.check_target_reached():
-                self.logger.info(f"Target amount of Â£{self.state_manager.state.target_amount} reached! Resetting cycle.")
+                self.logger.info(f"Target amount of ÃÂ£{self.state_manager.state.target_amount} reached! Resetting cycle.")
                 # State manager's check_target_reached handles the cycle reset logic now
 
-            return True # Bet was settled (or timed out)
+            return True # Bet was settled
 
         except Exception as e:
             self.logger.error(f"Error checking bet result for market {active_bet.get('market_id', 'N/A')}: {str(e)}", exc_info=True)
             return False
 
-    def _should_timeout_bet(self, bet: Dict, market_data: Dict) -> bool:
+    def _has_potential_issues(self, bet: Dict, market_data: Dict) -> bool:
         """
-        Determine if a bet should be timed out based on market start time,
-        in-play status, and bet age.
-
+        Identify potential issues with a bet but DON'T auto-settle.
+        Only log warnings for manual attention.
+        
         Args:
             bet: Bet details dictionary. Must contain 'timestamp'. Optionally 'market_start_time'.
             market_data: Current market data dictionary (can be empty or partial).
-
+            
         Returns:
-            True if the bet should timeout, False otherwise
+            True if issues are detected, False otherwise
         """
         try:
             now = datetime.now(timezone.utc)
             config = self.config_manager.get_config()
             timeout_config = config.get('result_checking', {})
             event_timeout_hours = timeout_config.get('event_timeout_hours', 12) # Default 12 hours
+            
+            market_id = bet.get("market_id", "Unknown")
+            selection_id = bet.get("selection_id", "Unknown")
+            team_name = bet.get("team_name", "Unknown")
+            event_name = bet.get("event_name", "Unknown Event")
 
             # --- 1. Check based on Market Start Time and In-Play Status ---
             market_start_time_str = market_data.get('marketStartTime', bet.get('market_start_time'))
@@ -509,62 +506,67 @@ class BettingService:
                     self.logger.warning(f"Could not parse market start time: {market_start_time_str}")
 
             is_inplay = market_data.get('inplay', False)
+            market_status = market_data.get('status', 'Unknown')
 
             if market_start_time:
                 # Calculate time since market start
-                 time_since_start = now - market_start_time
+                time_since_start = now - market_start_time
 
-                 # Timeout if market started long ago but isn't settled
-                 if time_since_start > timedelta(hours=event_timeout_hours):
-                     self.logger.info(
-                         f"Bet timeout triggered: Market started {time_since_start.total_seconds() / 3600:.1f} hours ago "
-                         f"(> {event_timeout_hours} hr limit). Start time: {market_start_time.isoformat()}"
-                     )
-                     return True
+                # Check for very old events
+                if time_since_start > timedelta(hours=event_timeout_hours):
+                    self.logger.warning(
+                        f"ATTENTION NEEDED: Market {market_id} ({event_name}) started "
+                        f"{time_since_start.total_seconds() / 3600:.1f} hours ago "
+                        f"(> {event_timeout_hours} hr expected duration) but status is {market_status}. "
+                        f"Manual verification required."
+                    )
+                    return True
 
-                 # Specific check for potentially stuck in-play markets
-                 # Most football matches finish within 2-3 hours. Allow buffer.
-                 max_inplay_duration_hours = 4
-                 if is_inplay and time_since_start > timedelta(hours=max_inplay_duration_hours):
-                      self.logger.info(
-                          f"Bet timeout triggered: Market in-play for {time_since_start.total_seconds() / 3600:.1f} hours "
-                          f"(> {max_inplay_duration_hours} hr limit). Start time: {market_start_time.isoformat()}"
-                      )
-                      return True
+                # Specific check for potentially stuck in-play markets
+                max_inplay_duration_hours = 4
+                if is_inplay and time_since_start > timedelta(hours=max_inplay_duration_hours):
+                    self.logger.warning(
+                        f"ATTENTION NEEDED: Market {market_id} ({event_name}) has been in-play for "
+                        f"{time_since_start.total_seconds() / 3600:.1f} hours "
+                        f"(> {max_inplay_duration_hours} hr expected game duration). "
+                        f"Selection: {team_name} (ID: {selection_id}). "
+                        f"Manual verification required."
+                    )
+                    return True
 
             # --- 2. Check based on Bet Placement Time (Fallback) ---
             try:
-                 placement_time_str = bet['timestamp']
-                 # Handle potential 'Z' for UTC
-                 if placement_time_str.endswith('Z'):
-                      placement_time_str = placement_time_str[:-1] + '+00:00'
-                 placement_time = datetime.fromisoformat(placement_time_str)
-                 # Ensure timezone awareness
-                 if placement_time.tzinfo is None:
-                     placement_time = placement_time.replace(tzinfo=timezone.utc)
+                placement_time_str = bet['timestamp']
+                # Handle potential 'Z' for UTC
+                if placement_time_str.endswith('Z'):
+                    placement_time_str = placement_time_str[:-1] + '+00:00'
+                placement_time = datetime.fromisoformat(placement_time_str)
+                # Ensure timezone awareness
+                if placement_time.tzinfo is None:
+                    placement_time = placement_time.replace(tzinfo=timezone.utc)
 
-                 bet_age = now - placement_time
-                 # Use a longer timeout based purely on bet age as a safety net
-                 # e.g., if market start time was wrong or missing
-                 max_bet_age_days = 3 # Timeout bets older than 3 days regardless
+                bet_age = now - placement_time
+                # Flag very old bets for manual attention
+                max_bet_age_days = 3
 
-                 if bet_age > timedelta(days=max_bet_age_days):
-                     self.logger.info(
-                         f"Bet timeout triggered: Bet is {bet_age.days} days old "
-                         f"(> {max_bet_age_days} day limit). Placed at: {placement_time.isoformat()}"
-                     )
-                     return True
+                if bet_age > timedelta(days=max_bet_age_days):
+                    self.logger.warning(
+                        f"ATTENTION NEEDED: Bet on market {market_id} ({event_name}) is "
+                        f"{bet_age.days} days old (> {max_bet_age_days} day threshold). "
+                        f"Selection: {team_name} (ID: {selection_id}). "
+                        f"Current market status: {market_status}. "
+                        f"Manual verification required."
+                    )
+                    return True
             except (KeyError, ValueError) as e:
-                 self.logger.error(f"Error processing bet timestamp for timeout check: {e}")
-                 # Cannot determine age, don't timeout based on age
+                self.logger.error(f"Error processing bet timestamp: {e}")
 
-
-            # If none of the timeout conditions are met, don't timeout
+            # No issues detected
             return False
 
         except Exception as e:
-            self.logger.error(f"Error checking bet timeout: {str(e)}", exc_info=True)
-            # Default to not timing out if there's an error in the check itself
+            self.logger.error(f"Error checking bet issues: {str(e)}", exc_info=True)
+            # Return False to avoid erroneously flagging bets with errors in the check itself
             return False
 
     async def run_betting_cycle(self) -> None:
