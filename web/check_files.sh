@@ -1,94 +1,88 @@
 #!/bin/bash
 # Script to check for required dashboard files and their permissions
 
-# Base directory - CORRECTED PATH
-WEB_DIR="/home/loopnova/domains/bf100k/public_html/web"
+# Base directory for the web files
+# Adjust this path if your web root is different or the script is run from elsewhere
+WEB_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+# Defaulting to script's directory, assuming it's in /web/
+
 cd "$WEB_DIR" || { echo "Cannot access web directory at $WEB_DIR!"; exit 1; }
 
 echo "===== Dashboard Files Check ====="
-echo "Current directory: $(pwd)"
+echo "Checking in directory: $(pwd)"
 echo ""
 
-# Check dashboard files
-echo "Checking dashboard files:"
-for file in dashboard.html dashboard.css dashboard.js; do
-    if [ -f "$file" ]; then
-        echo "✓ $file exists ($(stat -c '%s bytes, permissions: %a' "$file"))"
-    else
-        echo "✗ $file is missing!"
-    fi
-done
+# Helper function to check file
+check_file() {
+    local filepath="$1"
+    local filename=$(basename "$filepath")
+    local description="$2"
 
-echo ""
-echo "Checking data directory structure:"
-# Check data directory
-if [ -d "data" ]; then
-    echo "✓ data/ directory exists (permissions: $(stat -c '%a' data/))"
-    
-    # Check betting directory
-    if [ -d "data/betting" ]; then
-        echo "  ✓ data/betting/ directory exists (permissions: $(stat -c '%a' data/betting/))"
-        
-        # Check required JSON files
-        echo ""
-        echo "  Checking JSON files in data/betting/:"
-        for file in betting_state.json active_bet.json bet_history.json; do
-            if [ -f "data/betting/$file" ]; then
-                size=$(stat -c '%s' "data/betting/$file")
-                if [ "$size" -gt 2 ]; then
-                    echo "    ✓ $file exists ($size bytes, permissions: $(stat -c '%a' "data/betting/$file"))"
-                    echo "      First 100 chars: $(head -c 100 "data/betting/$file" | tr -d '\n')..."
-                else
-                    echo "    ⚠  $file exists but may be empty or invalid ($size bytes)"
-                fi
-            else
-                echo "    ✗ $file is missing!"
-            fi
-        done
-    else
-        echo "  ✗ data/betting/ directory is missing!"
-    fi
-else
-    echo "✗ data/ directory is missing!"
-fi
-
-echo ""
-echo "Checking config directory:"
-# Check config directory (now inside web directory)
-if [ -d "config" ]; then
-    echo "✓ config/ directory exists (permissions: $(stat -c '%a' config/))"
-    
-    # Check betting_config.json
-    if [ -f "config/betting_config.json" ]; then
-        size=$(stat -c '%s' "config/betting_config.json")
+    if [ -f "$filepath" ]; then
+        local size=$(stat -c '%s' "$filepath" 2>/dev/null || stat -f '%z' "$filepath") # Linux/macOS size
+        local perms=$(stat -c '%a' "$filepath" 2>/dev/null || stat -f '%Lp' "$filepath") # Linux/macOS perms
         if [ "$size" -gt 2 ]; then
-            echo "  ✓ betting_config.json exists ($size bytes, permissions: $(stat -c '%a' "config/betting_config.json"))"
-            echo "    First 100 chars: $(head -c 100 "config/betting_config.json" | tr -d '\n')..."
+            echo "  ✓ $description ($filename) exists ($size bytes, permissions: $perms)"
+            # echo "    First 100 chars: $(head -c 100 "$filepath" | tr -d '\n')..." # Can be verbose
         else
-            echo "  ⚠  betting_config.json exists but may be empty or invalid ($size bytes)"
+            echo "  ⚠️ $description ($filename) exists but may be empty or invalid ($size bytes, permissions: $perms)"
         fi
     else
-        echo "  ✗ betting_config.json is missing!"
+        echo "  ✗ $description ($filename) is MISSING!"
     fi
-else
-    echo "✗ config/ directory is missing!"
+}
+
+# Helper function to check directory
+check_dir() {
+    local dirpath="$1"
+    local description="$2"
+    if [ -d "$dirpath" ]; then
+         local perms=$(stat -c '%a' "$dirpath" 2>/dev/null || stat -f '%Lp' "$dirpath")
+        echo "✓ $description ($(basename "$dirpath")/) directory exists (permissions: $perms)"
+        return 0 # Success
+    else
+        echo "✗ $description ($(basename "$dirpath")/) directory is MISSING!"
+        return 1 # Failure
+    fi
+}
+
+
+# Check dashboard files
+echo "--- Dashboard Files ---"
+check_file "dashboard.html" "Dashboard HTML"
+check_file "dashboard.css" "Dashboard CSS"
+check_file "dashboard.js" "Dashboard JS"
+
+# Check config directory and file
+echo ""
+echo "--- Configuration ---"
+if check_dir "config" "Config"; then
+    check_file "config/betting_config.json" "Betting Config"
 fi
 
+# Check data directory structure and files
 echo ""
-echo "Checking logs directory:"
-# Check logs directory
-if [ -d "logs" ]; then
-    echo "✓ logs/ directory exists (permissions: $(stat -c '%a' logs/))"
-    
-    # Check system.log
-    if [ -f "logs/system.log" ]; then
-        echo "  ✓ system.log exists ($(stat -c '%s bytes, permissions: %a' "logs/system.log"))"
-    else
-        echo "  ✗ system.log is missing!"
+echo "--- Data Files ---"
+if check_dir "data" "Data"; then
+    if check_dir "data/betting" "Betting Data"; then
+        check_file "data/betting/betting_state.json" "Betting State"
+        check_file "data/betting/active_bet.json" "Active Bet"
+        check_file "data/betting/bet_history.json" "Bet History"
     fi
-else
-    echo "✗ logs/ directory is missing!"
 fi
+
+# Check logs directory and key log file
+echo ""
+echo "--- Logs ---"
+if check_dir "logs" "Logs"; then
+    check_file "logs/system.log" "System Log"
+    # Add checks for other specific logs if needed, e.g.:
+    # check_file "logs/BetfairClient.log" "Betfair Client Log"
+fi
+
 
 echo ""
 echo "===== End of Check ====="
+echo "Notes:"
+echo "- Ensure the web server process (e.g., www-data, nginx, apache) has READ permissions for all checked files, especially in data/ and config/."
+echo "- Ensure the Python application process has READ and WRITE permissions for files in data/betting/ and logs/."
